@@ -39,7 +39,9 @@
 #include "OpenTypeCG.h"
 #include "PathCG.h"
 #include "SharedBuffer.h"
+#include "platform/graphics/cocoa/NutjobFontBackend.h"
 #include <CoreText/CoreText.h>
+#include <cmath>
 #include <float.h>
 #include <pal/spi/cf/CoreTextSPI.h>
 #include <pal/spi/cg/CoreGraphicsSPI.h>
@@ -47,6 +49,7 @@
 #include <wtf/Assertions.h>
 #include <wtf/HexNumber.h>
 #include <wtf/MathExtras.h>
+#include <wtf/NeverDestroyed.h>
 #include <wtf/RetainPtr.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/cf/VectorCF.h>
@@ -58,6 +61,59 @@
 #include <pal/cf/CoreTextSoftLink.h>
 
 namespace WebCore {
+
+namespace {
+
+struct NutjobMetricComparisonCounters {
+    uint64_t advanceChecks { 0 };
+    uint64_t advanceMatches { 0 };
+    uint64_t metricChecks { 0 };
+    uint64_t metricMatches { 0 };
+};
+
+inline bool approximatelyEqual(float a, float b)
+{
+    float tolerance = std::max(0.5f, std::max(std::fabs(a), std::fabs(b)) * 0.02f);
+    return std::fabs(a - b) <= tolerance;
+}
+
+inline void noteMetricComparison(const FontPlatformData& platformData, const char* metric, float coreTextValue, float nutjobValue, const NutjobFontBackend::FontHandle& handle)
+{
+    if (!std::isfinite(coreTextValue) || !std::isfinite(nutjobValue))
+        return;
+
+    static NeverDestroyed<NutjobMetricComparisonCounters> counters;
+    bool matched = approximatelyEqual(coreTextValue, nutjobValue);
+    ++counters.get().metricChecks;
+    if (matched)
+        ++counters.get().metricMatches;
+
+    if (!matched || counters.get().metricChecks <= 4 || !(counters.get().metricChecks % 128)) {
+        auto familyName = platformData.familyName().utf8();
+        double agreement = static_cast<double>(counters.get().metricMatches) * 100.0 / static_cast<double>(counters.get().metricChecks);
+        RELEASE_LOG(Fonts, "Nutjob font metric compare metric=%s source=%s family=%{public}s ct=%.3f nutjob=%.3f matched=%d agreement=%.2f%% (%llu/%llu)", metric, handle.sourceKind() == NutjobFontBackend::SourceKind::Exact ? "exact" : "fallback", familyName.data(), coreTextValue, nutjobValue, matched, agreement, static_cast<unsigned long long>(counters.get().metricMatches), static_cast<unsigned long long>(counters.get().metricChecks));
+    }
+}
+
+inline void noteAdvanceWidthComparison(const FontPlatformData& platformData, Glyph glyph, float coreTextValue, float nutjobValue)
+{
+    if (!std::isfinite(coreTextValue) || !std::isfinite(nutjobValue))
+        return;
+
+    static NeverDestroyed<NutjobMetricComparisonCounters> counters;
+    bool matched = approximatelyEqual(coreTextValue, nutjobValue);
+    ++counters.get().advanceChecks;
+    if (matched)
+        ++counters.get().advanceMatches;
+
+    if (!matched || counters.get().advanceChecks <= 8 || !(counters.get().advanceChecks % 128)) {
+        auto familyName = platformData.familyName().utf8();
+        double agreement = static_cast<double>(counters.get().advanceMatches) * 100.0 / static_cast<double>(counters.get().advanceChecks);
+        RELEASE_LOG(Fonts, "Nutjob glyph advance compare family=%{public}s glyph=%u ct=%.3f nutjob=%.3f matched=%d agreement=%.2f%% (%llu/%llu)", familyName.data(), glyph, coreTextValue, nutjobValue, matched, agreement, static_cast<unsigned long long>(counters.get().advanceMatches), static_cast<unsigned long long>(counters.get().advanceChecks));
+    }
+}
+
+} // namespace
 
 static inline bool caseInsensitiveCompare(CFStringRef a, CFStringRef b)
 {
@@ -138,6 +194,19 @@ void Font::platformInit()
             ascent = scaleEmToUnits(typoAscent, unitsPerEm) * pointSize;
             descent = -scaleEmToUnits(typoDescent, unitsPerEm) * pointSize;
             lineGap = scaleEmToUnits(typoLineGap, unitsPerEm) * pointSize;
+        }
+    }
+
+    if (auto* nutjobFont = m_platformData.nutjobFont(); nutjobFont && nutjobFont->sourceKind() == NutjobFontBackend::SourceKind::Exact) {
+        if (auto nutjobUnitsPerEm = NutjobFontBackend::unitsPerEm(*nutjobFont))
+            noteMetricComparison(m_platformData, "units-per-em", unitsPerEm, nutjobUnitsPerEm, *nutjobFont);
+        if (pointSize) {
+            auto nutjobAscent = NutjobFontBackend::ascent(*nutjobFont, pointSize);
+            auto nutjobDescent = -NutjobFontBackend::descent(*nutjobFont, pointSize);
+            auto nutjobLineGap = NutjobFontBackend::lineHeight(*nutjobFont, pointSize) - nutjobAscent - nutjobDescent;
+            noteMetricComparison(m_platformData, "ascent", ascent, nutjobAscent, *nutjobFont);
+            noteMetricComparison(m_platformData, "descent", descent, nutjobDescent, *nutjobFont);
+            noteMetricComparison(m_platformData, "line-gap", lineGap, nutjobLineGap, *nutjobFont);
         }
     }
 
@@ -611,6 +680,14 @@ float Font::platformWidthForGlyph(Glyph glyph) const
         bool horizontal = platformData().orientation() == FontOrientation::Horizontal;
         CTFontOrientation orientation = horizontal || m_isBrokenIdeographFallback ? kCTFontOrientationHorizontal : kCTFontOrientationVertical;
         CTFontGetAdvancesForGlyphs(protect(ctFont()).get(), orientation, &glyph, &advance, 1);
+        if (horizontal) {
+            if (auto* nutjobFont = platformData().nutjobFont()) {
+                if (nutjobFont->sourceKind() == NutjobFontBackend::SourceKind::Exact) {
+                    auto nutjobAdvance = NutjobFontBackend::advanceWidth(*nutjobFont, glyph, platformData().size());
+                    noteAdvanceWidthComparison(platformData(), glyph, advance.width, nutjobAdvance);
+                }
+            }
+        }
     }
     return advance.width;
 }
