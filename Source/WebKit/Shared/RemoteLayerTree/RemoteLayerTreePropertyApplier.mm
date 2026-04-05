@@ -659,8 +659,8 @@ void RemoteLayerTreePropertyApplier::applyProperties(RemoteLayerTreeNode& node, 
                 [layerRef renderInContext:ctx.get()];
                 [layerRef setSublayers:savedSublayers.get()];
 
-                // renderInContext: produces vertically flipped output (CG origin is
-                // bottom-left). Flip rows to get screen coordinates (top-left origin).
+                // renderInContext: produces vertically flipped output (CG origin is bottom-left).
+                // Flip rows to get screen coordinates (top-left origin).
                 for (int row = 0; row < h / 2; row++) {
                     int oppositeRow = h - 1 - row;
                     for (int col = 0; col < w; col++) {
