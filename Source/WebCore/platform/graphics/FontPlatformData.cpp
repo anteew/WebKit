@@ -27,6 +27,9 @@
 #include "FontDescription.h"
 #include "RenderStyleConstants.h"
 #include "StyleFontSizeFunctions.h"
+#if USE(CORE_TEXT) && PLATFORM(MAC)
+#include "platform/graphics/cocoa/NutjobFontBackend.h"
+#endif
 
 #include <wtf/SortedArrayMap.h>
 #include <wtf/TZoneMallocInlines.h>

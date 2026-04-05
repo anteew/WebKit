@@ -26,6 +26,7 @@
 #include "Font.h"
 #include "FontCustomPlatformData.h"
 #include "SharedBuffer.h"
+#include "platform/graphics/cocoa/NutjobFontBackend.h"
 #include <CoreText/CoreText.h>
 #include <WebCore/Font.h>
 #include <pal/spi/cf/CoreTextSPI.h>
@@ -78,6 +79,7 @@ FontPlatformData::FontPlatformData(RetainPtr<CTFontRef>&& font, float size, bool
 {
     ASSERT_ARG(font, font);
     m_font = WTF::move(font);
+    m_nutjobFont = NutjobFontBackend::createFontHandle(m_font.get(), customPlatformData ? &customPlatformData->creationData : nullptr);
     m_isColorBitmapFont = CTFontGetSymbolicTraits(m_font.get()) & kCTFontColorGlyphsTrait;
     m_isSystemFont = WebCore::isSystemFont(m_font.get());
 
@@ -243,6 +245,7 @@ FontPlatformData::Attributes FontPlatformData::attributes() const
 
 FontPlatformData::FontPlatformData(float size, WebCore::FontOrientation&& orientation, WebCore::FontWidthVariant&& widthVariant, WebCore::TextRenderingMode&& textRenderingMode, bool syntheticBold, bool syntheticOblique, RetainPtr<CTFontRef>&& font, RefPtr<FontCustomPlatformData>&& customPlatformData)
     : m_font(font)
+    , m_nutjobFont(NutjobFontBackend::createFontHandle(font.get(), customPlatformData ? &customPlatformData->creationData : nullptr))
     , m_size(size)
     , m_orientation(orientation)
     , m_widthVariant(widthVariant)

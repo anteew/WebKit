@@ -82,6 +82,9 @@ namespace WebCore {
 
 class Font;
 class FontDescription;
+namespace NutjobFontBackend {
+class FontHandle;
+}
 struct FontCustomPlatformData;
 struct FontSizeAdjust;
 #if USE(SKIA)
@@ -383,6 +386,7 @@ public:
     bool hasCustomTracking() const { return isSystemFont(); }
 
     CTFontRef ctFont() const { return m_font.get(); }
+    NutjobFontBackend::FontHandle* nutjobFont() const { return m_nutjobFont.get(); }
 #endif
 
 #if PLATFORM(COCOA)
@@ -489,6 +493,7 @@ private:
     RefPtr<SharedGDIObject<HFONT>> m_hfont; // FIXME: Delete this in favor of m_hbFont
 #elif USE(CORE_TEXT)
     RetainPtr<CTFontRef> m_font;
+    RefPtr<NutjobFontBackend::FontHandle> m_nutjobFont;
 #endif
 
 #if USE(CAIRO)
