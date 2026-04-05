@@ -55,6 +55,51 @@ static void* keyValueObservingContext = &keyValueObservingContext;
 static const int testHeaderBannerHeight = 42;
 static const int testFooterBannerHeight = 58;
 
+static NSString *harnessMetadataPathFromEnvironment(void)
+{
+    return NSProcessInfo.processInfo.environment[@"NUTJOB_HARNESS_METADATA_PATH"];
+}
+
+static NSDictionary *defaultHarnessDOMSummary(void)
+{
+    return @{
+        @"readyState": @"unknown",
+        @"title": @"",
+        @"scrollWidth": @0,
+        @"scrollHeight": @0,
+        @"elementCount": @0,
+        @"imageCount": @0,
+        @"linkCount": @0,
+        @"textLength": @0,
+        @"innerWidth": @0,
+        @"innerHeight": @0,
+        @"devicePixelRatio": @1
+    };
+}
+
+static void setHarnessCGFloatEnvironment(NSString *name, CGFloat value)
+{
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "%.4f", value);
+    setenv(name.UTF8String, buffer, 1);
+}
+
+static void writeHarnessJSON(NSString *path, NSDictionary *object)
+{
+    if (!path.length)
+        return;
+
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:object options:NSJSONWritingPrettyPrinted error:&error];
+    if (!data) {
+        NSLog(@"nutjob harness metadata encode failed: %@", error);
+        return;
+    }
+
+    if (![data writeToFile:path options:NSDataWritingAtomic error:&error])
+        NSLog(@"nutjob harness metadata write failed: %@", error);
+}
+
 @interface MiniBrowserNSTextFinder : NSTextFinder
 
 @property (nonatomic, copy) dispatch_block_t hideInterfaceCallback;
@@ -183,6 +228,88 @@ static const int testFooterBannerHeight = 58;
     // Private windows get separate identifier so they can't merge with regular windows
     if (_isPrivateBrowsingWindow)
         self.window.tabbingIdentifier = @"MiniBrowserPrivateWindow";
+
+    // Start nutjob input pipe reader if configured
+    NSString *inputPipePath = NSProcessInfo.processInfo.environment[@"NUTJOB_INPUT_PIPE"];
+    if (inputPipePath.length > 0)
+        [self startNutjobInputReader:inputPipePath];
+}
+
+- (void)startNutjobInputReader:(NSString *)pipePath
+{
+    __weak WK2BrowserWindowController *weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        FILE *inputFile = fopen(pipePath.UTF8String, "r");
+        if (!inputFile) {
+            NSLog(@"nutjob: failed to open input pipe %@", pipePath);
+            return;
+        }
+        NSLog(@"nutjob: input reader connected to %@", pipePath);
+
+        char line[4096];
+        while (fgets(line, sizeof(line), inputFile)) {
+            NSString *jsonLine = [[NSString alloc] initWithUTF8String:line];
+            jsonLine = [jsonLine stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (jsonLine.length == 0)
+                continue;
+
+            NSData *data = [jsonLine dataUsingEncoding:NSUTF8StringEncoding];
+            NSDictionary *event = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if (!event)
+                continue;
+
+            NSString *type = event[@"type"];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                WK2BrowserWindowController *self = weakSelf;
+                if (!self || !self->_webView)
+                    return;
+
+                if ([type isEqualToString:@"keydown"]) {
+                    NSString *key = event[@"key"];
+                    NSString *js = nil;
+                    if ([key isEqualToString:@"ArrowDown"])
+                        js = @"window.scrollBy(0, 60)";
+                    else if ([key isEqualToString:@"ArrowUp"])
+                        js = @"window.scrollBy(0, -60)";
+                    else if ([key isEqualToString:@"PageDown"])
+                        js = @"window.scrollBy(0, window.innerHeight * 0.9)";
+                    else if ([key isEqualToString:@"PageUp"])
+                        js = @"window.scrollBy(0, -window.innerHeight * 0.9)";
+                    else if ([key isEqualToString:@"Home"])
+                        js = @"window.scrollTo(0, 0)";
+                    else if ([key isEqualToString:@"End"])
+                        js = @"window.scrollTo(0, document.body.scrollHeight)";
+                    else if ([key isEqualToString:@"Tab"]) {
+                        // Tab through focusable elements
+                        js = @"(function(){var f=document.querySelectorAll('a,button,input,select,textarea,[tabindex]');"
+                              "var c=document.activeElement;var i=Array.from(f).indexOf(c);"
+                              "if(i<f.length-1)f[i+1].focus();else if(f.length)f[0].focus()})()";
+                    }
+                    if (js)
+                        [self->_webView evaluateJavaScript:js completionHandler:nil];
+
+                } else if ([type isEqualToString:@"click"]) {
+                    int x = [event[@"x"] intValue];
+                    int y = [event[@"y"] intValue];
+                    NSString *js = [NSString stringWithFormat:
+                        @"(function(){var e=document.elementFromPoint(%d,%d);"
+                         "if(e){e.click();return e.tagName+'#'+e.id}return null})()", x, y];
+                    [self->_webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+                        if (result)
+                            NSLog(@"nutjob: clicked %@", result);
+                    }];
+
+                } else if ([type isEqualToString:@"scroll"]) {
+                    int deltaX = [event[@"deltaX"] intValue];
+                    int deltaY = [event[@"deltaY"] intValue];
+                    NSString *js = [NSString stringWithFormat:@"window.scrollBy(%d,%d)", deltaX, deltaY];
+                    [self->_webView evaluateJavaScript:js completionHandler:nil];
+                }
+            });
+        }
+        fclose(inputFile);
+        NSLog(@"nutjob: input reader disconnected");
+    });
 }
 
 - (void)userAgentDidChange:(NSNotification *)notification
@@ -822,6 +949,7 @@ static BOOL areEssentiallyEqual(double a, double b)
 {
     // FIXME: We shouldn't have to set the url text here.
     [urlText setStringValue:urlString];
+    [self updateHarnessContentOffsetEnvironment];
     [self fetch:nil];
 }
 
@@ -936,6 +1064,100 @@ static BOOL isJavaScriptURL(NSURL *url)
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation
 {
     LOG(@"didFinishNavigation: %@", navigation);
+
+    NSString *metadataPath = harnessMetadataPathFromEnvironment();
+    if (!metadataPath.length)
+        return;
+
+    NSRect webViewFrameInContentView = [_webView.superview convertRect:_webView.frame toView:self.window.contentView];
+    NSRect contentBounds = self.window.contentView.bounds;
+    NSRect contentLayoutRect = self.window.contentLayoutRect;
+    NSEdgeInsets obscuredContentInsets = webView.obscuredContentInsets;
+    NSDictionary *baseSummary = @{
+        @"url": webView.URL.absoluteString ?: @"",
+        @"title": webView.title ?: @"",
+        @"windowFrame": @{
+            @"width": @(self.window.frame.size.width),
+            @"height": @(self.window.frame.size.height)
+        },
+        @"windowContentSize": @{
+            @"width": @(self.window.contentView.frame.size.width),
+            @"height": @(self.window.contentView.frame.size.height)
+        },
+        @"windowContentLayoutSize": @{
+            @"width": @(self.window.contentLayoutRect.size.width),
+            @"height": @(self.window.contentLayoutRect.size.height)
+        },
+        @"windowContentLayoutOrigin": @{
+            @"x": @(self.window.contentLayoutRect.origin.x),
+            @"y": @(self.window.contentLayoutRect.origin.y)
+        },
+        @"windowContentLayoutInsets": @{
+            @"left": @(contentLayoutRect.origin.x),
+            @"top": @(NSMaxY(contentBounds) - NSMaxY(contentLayoutRect)),
+            @"right": @(NSMaxX(contentBounds) - NSMaxX(contentLayoutRect)),
+            @"bottom": @(contentLayoutRect.origin.y)
+        },
+        @"containerViewSize": @{
+            @"width": @(containerView.bounds.size.width),
+            @"height": @(containerView.bounds.size.height)
+        },
+        @"webViewFrameInContentView": @{
+            @"x": @(webViewFrameInContentView.origin.x),
+            @"y": @(webViewFrameInContentView.origin.y),
+            @"width": @(webViewFrameInContentView.size.width),
+            @"height": @(webViewFrameInContentView.size.height)
+        },
+        @"webViewObscuredContentInsets": @{
+            @"left": @(obscuredContentInsets.left),
+            @"top": @(obscuredContentInsets.top),
+            @"right": @(obscuredContentInsets.right),
+            @"bottom": @(obscuredContentInsets.bottom)
+        },
+        @"webViewSize": @{
+            @"width": @(webView.bounds.size.width),
+            @"height": @(webView.bounds.size.height)
+        },
+        @"domSummary": defaultHarnessDOMSummary()
+    };
+
+    static NSString * const summaryScript =
+        @"(() => {"
+         "const doc = document.documentElement;"
+         "const body = document.body;"
+         "return {"
+           "readyState: document.readyState || 'unknown',"
+           "title: document.title || '',"
+           "scrollWidth: doc ? doc.scrollWidth : 0,"
+           "scrollHeight: doc ? doc.scrollHeight : 0,"
+           "imageCount: document.images ? document.images.length : 0,"
+           "linkCount: document.links ? document.links.length : 0,"
+           "elementCount: document.getElementsByTagName('*').length,"
+           "textLength: body && body.innerText ? body.innerText.length : 0,"
+           "innerWidth: window.innerWidth || 0,"
+           "innerHeight: window.innerHeight || 0,"
+           "devicePixelRatio: window.devicePixelRatio || 1"
+         "};"
+        "})()";
+
+    [webView evaluateJavaScript:summaryScript completionHandler:^(id result, NSError *error) {
+        NSMutableDictionary *summary = [baseSummary mutableCopy];
+        if (!error && [result isKindOfClass:[NSDictionary class]])
+            summary[@"domSummary"] = result;
+        writeHarnessJSON(metadataPath, summary);
+    }];
+}
+
+- (void)updateHarnessContentOffsetEnvironment
+{
+    [super updateHarnessContentOffsetEnvironment];
+
+    if (!_webView)
+        return;
+
+    NSEdgeInsets obscuredContentInsets = _webView.obscuredContentInsets;
+    setHarnessCGFloatEnvironment(@"NUTJOB_HARNESS_CONTENT_OFFSET_X", obscuredContentInsets.left);
+    setHarnessCGFloatEnvironment(@"NUTJOB_HARNESS_CONTENT_OFFSET_Y", obscuredContentInsets.top);
 }
 
 - (void)webView:(WKWebView *)webView didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition disposition, NSURLCredential *__nullable credential))completionHandler
