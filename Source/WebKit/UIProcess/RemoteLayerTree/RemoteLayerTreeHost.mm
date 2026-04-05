@@ -48,8 +48,7 @@
 #import <pal/spi/cocoa/QuartzCoreSPI.h>
 #import <wtf/TZoneMallocInlines.h>
 
-// Nutjob compositor integration — this file owns the storage
-#define NJC_IMPLEMENTATION
+// Nutjob compositor integration
 #include "nutjob_compositor.h"
 #import <wtf/cocoa/TypeCastsCocoa.h>
 
@@ -73,6 +72,46 @@ using namespace WebCore;
 #define REMOTE_LAYER_TREE_HOST_RELEASE_LOG(...) RELEASE_LOG(ViewState, __VA_ARGS__)
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(RemoteLayerTreeHost);
+
+static void captureLayerContentsToNutjob(RemoteLayerTreeNode& node)
+{
+    if (!njc_is_active())
+        return;
+
+    nutjob_compositor_ensure_initialized(njc_thread(), 1180, 900);
+
+    RetainPtr layerRef = node.layer();
+    CGRect bounds = [layerRef bounds];
+    int width = static_cast<int>(ceilf(bounds.size.width * [layerRef contentsScale]));
+    int height = static_cast<int>(ceilf(bounds.size.height * [layerRef contentsScale]));
+    if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || ![layerRef contents])
+        return;
+
+    auto colorSpace = adoptCF(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));
+    auto pixelData = std::make_unique<int[]>(width * height);
+    auto context = adoptCF(CGBitmapContextCreate(pixelData.get(), width, height, 8, width * 4, colorSpace.get(),
+        static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little));
+    if (!context)
+        return;
+
+    CGContextScaleCTM(context.get(), [layerRef contentsScale], [layerRef contentsScale]);
+
+    RetainPtr savedSublayers = [layerRef sublayers];
+    [layerRef setSublayers:nil];
+    [layerRef renderInContext:context.get()];
+    [layerRef setSublayers:savedSublayers.get()];
+
+    for (int row = 0; row < height / 2; ++row) {
+        int oppositeRow = height - 1 - row;
+        for (int column = 0; column < width; ++column) {
+            int tmp = pixelData[row * width + column];
+            pixelData[row * width + column] = pixelData[oppositeRow * width + column];
+            pixelData[oppositeRow * width + column] = tmp;
+        }
+    }
+
+    nutjob_async_layer_contents(njc_thread(), njc_layer_id(node.layerID().object().toUInt64()), pixelData.get(), width, height);
+}
 
 RemoteLayerTreeHost::RemoteLayerTreeHost(RemoteLayerTreeDrawingAreaProxy& drawingArea)
     : m_drawingArea(drawingArea)
@@ -161,11 +200,7 @@ bool RemoteLayerTreeHost::updateLayerTree(const IPC::Connection& connection, con
     auto processIdentifier = sender->coreProcessIdentifier();
 
     if (njc_is_active()) {
-        static bool inited = false;
-        if (!inited) {
-            nutjob_compositor_init(njc_thread(), 1180, 900);
-            inited = true;
-        }
+        nutjob_compositor_ensure_initialized(njc_thread(), 1180, 900);
         WTFLogAlways("njc: === updateLayerTree: created=%zu changed=%u destroyed=%zu ===",
             transaction.createdLayers().size(), transaction.changedLayerProperties().size(), transaction.destroyedLayers().size());
     }
@@ -271,12 +306,6 @@ bool RemoteLayerTreeHost::updateLayerTree(const IPC::Connection& connection, con
         rootLayerChanged = true;
 #endif
 
-    // Commit nutjob compositor frame
-    if (njc_is_active()) {
-        nutjob_compositor_commit(njc_thread());
-        nutjob_compositor_dump_layers(njc_thread());
-    }
-
     return rootLayerChanged;
 }
 
@@ -287,6 +316,8 @@ void RemoteLayerTreeHost::asyncSetLayerContents(PlatformLayerIdentifier layerID,
         return;
 
     node->applyBackingStore(this, properties);
+
+    captureLayerContentsToNutjob(*node);
 }
 
 RemoteLayerTreeNode* RemoteLayerTreeHost::nodeForID(std::optional<PlatformLayerIdentifier> layerID) const

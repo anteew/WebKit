@@ -31,6 +31,7 @@
 #import "LayerProperties.h"
 #import "Logging.h"
 #import "MessageSenderInlines.h"
+#import "nutjob_compositor.h"
 #import "ProcessThrottler.h"
 #import "RemoteLayerTreeCommitBundle.h"
 #import "RemoteLayerTreeDrawingAreaProxyMessages.h"
@@ -350,9 +351,15 @@ void RemoteLayerTreeDrawingAreaProxy::commitLayerTree(IPC::Connection& connectio
     // The `sendRights` vector must have __block scope to be captured by
     // the commit handler block below without the need to copy it.
     __block Vector<MachSendRight, 16> sendRights;
+    int totalCreatedLayerCount = 0;
+    int totalChangedLayerCount = 0;
+    int totalDestroyedLayerCount = 0;
     for (auto& transaction : bundle.transactions) {
         // commitLayerTreeTransaction consumes the incoming buffers, so we need to grab them first.
         CheckedRef removeLayerTreeTransaction = transaction.first;
+        totalCreatedLayerCount += static_cast<int>(removeLayerTreeTransaction->createdLayers().size());
+        totalChangedLayerCount += static_cast<int>(removeLayerTreeTransaction->changedLayerProperties().size());
+        totalDestroyedLayerCount += static_cast<int>(removeLayerTreeTransaction->destroyedLayers().size());
         for (auto& [layerID, properties] : removeLayerTreeTransaction->changedLayerProperties()) {
             auto* backingStoreProperties = properties->backingStoreOrProperties.properties.get();
             if (!backingStoreProperties)
@@ -378,6 +385,13 @@ void RemoteLayerTreeDrawingAreaProxy::commitLayerTree(IPC::Connection& connectio
     RefPtr page = this->page();
     if (!page)
         return;
+
+    bool beganNutjobTransaction = false;
+    if (njc_is_active()) {
+        nutjob_compositor_ensure_initialized(njc_thread(), 1180, 900);
+        nutjob_compositor_transaction_begin(njc_thread(), static_cast<int>(bundle.transactions.size()), totalCreatedLayerCount, totalChangedLayerCount, totalDestroyedLayerCount);
+        beganNutjobTransaction = true;
+    }
 
     if (bundle.mainFrameData) {
         m_activityStateChangeID = bundle.mainFrameData->activityStateChangeID;
@@ -406,9 +420,15 @@ void RemoteLayerTreeDrawingAreaProxy::commitLayerTree(IPC::Connection& connectio
 
     for (auto& transaction : bundle.transactions) {
         commitLayerTreeTransaction(connection, CheckedRef { transaction.first }.get(), transaction.second, bundle.mainFrameData, bundle.pageData, bundle.transactionID);
-        if (!weakThis)
+        if (!weakThis) {
+            if (beganNutjobTransaction)
+                nutjob_compositor_transaction_end(njc_thread());
             return;
+        }
     }
+
+    if (beganNutjobTransaction)
+        nutjob_compositor_transaction_end(njc_thread());
 
     for (auto& callbackID : bundle.pageData.callbackIDs) {
         removeOutstandingPresentationUpdateCallback(connection, callbackID);
