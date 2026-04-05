@@ -47,6 +47,10 @@
 #import <WebCore/WebCoreCALayerExtras.h>
 #import <pal/spi/cocoa/QuartzCoreSPI.h>
 #import <wtf/TZoneMallocInlines.h>
+
+// Nutjob compositor integration — this file owns the storage
+#define NJC_IMPLEMENTATION
+#include "nutjob_compositor.h"
 #import <wtf/cocoa/TypeCastsCocoa.h>
 
 #if HAVE(MATERIAL_HOSTING)
@@ -156,8 +160,15 @@ bool RemoteLayerTreeHost::updateLayerTree(const IPC::Connection& connection, con
     }
     auto processIdentifier = sender->coreProcessIdentifier();
 
-    for (const auto& createdLayer : transaction.createdLayers())
+    if (njc_is_active())
+        WTFLogAlways("njc: === updateLayerTree: created=%zu changed=%u destroyed=%zu ===",
+            transaction.createdLayers().size(), transaction.changedLayerProperties().size(), transaction.destroyedLayers().size());
+
+    for (const auto& createdLayer : transaction.createdLayers()) {
+        if (njc_is_active())
+            WTFLogAlways("njc: CREATE layer=%llu", static_cast<unsigned long long>(createdLayer.layerID->object().toUInt64()));
         createLayer(createdLayer);
+    }
 
     bool rootLayerChanged = false;
     RefPtr rootNode = nodeForID(transaction.rootLayerID());
@@ -222,6 +233,9 @@ bool RemoteLayerTreeHost::updateLayerTree(const IPC::Connection& connection, con
         if (properties.changedProperties.contains(LayerChange::ClonedContentsChanged) && properties.clonedLayerID)
             clonesToUpdate.append({ layerID, *properties.clonedLayerID });
 
+        if (njc_is_active())
+            WTFLogAlways("njc: PROPS  layer=%llu changes=0x%llx", static_cast<unsigned long long>(layerID.object().toUInt64()), static_cast<unsigned long long>(properties.changedProperties.toRaw()));
+
         RemoteLayerTreePropertyApplier::applyProperties(*node, this, properties, m_nodes);
 
         if (m_isDebugLayerTreeHost) {
@@ -254,6 +268,19 @@ bool RemoteLayerTreeHost::updateLayerTree(const IPC::Connection& connection, con
         rootLayerChanged = true;
 #endif
 
+    // Commit nutjob compositor frame
+    if (njc_is_active()) {
+        static bool inited = false;
+        if (!inited) {
+            nutjob_compositor_init(njc_thread(), 1180, 900);
+            inited = true;
+        }
+        WTFLogAlways("njc: COMMIT (layer count before: %d)", nutjob_compositor_layer_count(njc_thread()));
+        nutjob_compositor_commit(njc_thread());
+        nutjob_compositor_dump_layers(njc_thread());
+        WTFLogAlways("njc: COMMIT done");
+    }
+
     return rootLayerChanged;
 }
 
@@ -276,6 +303,10 @@ RemoteLayerTreeNode* RemoteLayerTreeHost::nodeForID(std::optional<PlatformLayerI
 
 void RemoteLayerTreeHost::layerWillBeRemoved(WebCore::ProcessIdentifier processIdentifier, WebCore::PlatformLayerIdentifier layerID)
 {
+    // Mirror to nutjob compositor
+    if (njc_is_active())
+        nutjob_layer_destroy(njc_thread(), njc_layer_id(layerID.object().toUInt64()));
+
     auto animationDelegateIter = m_animationDelegates.find(layerID);
     if (animationDelegateIter != m_animationDelegates.end()) {
         [animationDelegateIter->value invalidate];
@@ -418,6 +449,10 @@ void RemoteLayerTreeHost::createLayer(const RemoteLayerTreeTransaction::LayerCre
     }
 
     m_nodes.add(*properties.layerID, node.releaseNonNull());
+
+    // Mirror to nutjob compositor
+    if (njc_is_active())
+        nutjob_layer_create(njc_thread(), njc_layer_id(properties.layerID->object().toUInt64()), static_cast<int>(properties.type));
 }
 
 #if !PLATFORM(IOS_FAMILY)

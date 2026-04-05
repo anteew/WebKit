@@ -112,6 +112,8 @@ enum class Command : uint8_t {
     DrawTextRun = 0x61,
     DefineFont = 0x62,
     DefineFontData = 0x63,
+    DestroySurface = 0x64,
+    ScrollPosition = 0x65,
 
     FillLinearGradient = 0x70,
     FillRadialGradient = 0x71,
@@ -721,6 +723,31 @@ inline FILE* tapFile()
 inline bool isActive()
 {
     return tapFile() != nullptr;
+}
+
+// --- Transaction log: structured JSONL of layer tree lifecycle ---
+// Activated by NUTJOB_TAP_TRANSACTION_LOG=<path>
+
+inline FILE* transactionLogFile()
+{
+    static std::once_flag once;
+    static FILE* file = nullptr;
+
+    std::call_once(once, [] {
+        const char* path = getenv("NUTJOB_TAP_TRANSACTION_LOG");
+        if (!path || !*path)
+            return;
+        file = fopen(path, "w");
+        if (!file) {
+            // Sandbox may block the requested path. Fall back to stderr logging.
+            WTFLogAlways("nutjob: transaction log fopen failed for %s (errno=%d), falling back to stderr", path, errno);
+        } else {
+            setvbuf(file, nullptr, _IOLBF, 0); // line-buffered for live tailing
+            WTFLogAlways("nutjob: transaction log opened at %s", path);
+        }
+    });
+
+    return file;
 }
 
 inline bool envFlagEnabled(const char* name)
@@ -2962,14 +2989,20 @@ public:
             noteHandling("draw-pattern-native-image", AdapterHandlingStrategy::Prerasterized);
     }
 
-    WebCore::ImageDrawResult drawImage(WebCore::Image& image, const WebCore::FloatRect& destination, const WebCore::FloatRect& sourceRect, WebCore::ImagePaintingOptions = { WebCore::ImageOrientation::Orientation::FromImage }) final
+    WebCore::ImageDrawResult drawImage(WebCore::Image& image, const WebCore::FloatRect& destination, const WebCore::FloatRect& sourceRect, WebCore::ImagePaintingOptions options = { WebCore::ImageOrientation::Orientation::FromImage }) final
     {
         noteContentCommand();
         ++m_counters.imagePlaceholders;
-        if (!emitImageResource(m_writer, m_serializationState, image, destination, sourceRect))
-            emitPlaceholderFallback("draw-image", "GraphicsContext::drawImage", destination, 0xFF9CA3AF);
-        else
+        if (emitImageResource(m_writer, m_serializationState, image, destination, sourceRect)) {
             noteHandling("draw-image", AdapterHandlingStrategy::Lowered);
+        } else if (emitRasterizedImageResource(m_writer, m_serializationState, destination, [&](WebCore::GraphicsContext& context) {
+            context.drawImage(image, destination, sourceRect, options);
+        })) {
+            ++m_counters.prerasterizedFallbacks;
+            noteHandling("draw-image", AdapterHandlingStrategy::Prerasterized);
+        } else {
+            emitPlaceholderFallback("draw-image", "GraphicsContext::drawImage", destination, 0xFF9CA3AF);
+        }
         return WebCore::ImageDrawResult::DidDraw;
     }
 

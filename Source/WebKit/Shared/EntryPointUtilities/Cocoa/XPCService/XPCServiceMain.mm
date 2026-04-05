@@ -273,6 +273,8 @@ void XPCServiceEventHandler(xpc_connection_t peer)
 
             if (const char* reportPath = xpc_dictionary_get_string(event, "nutjob-tap-report-path"))
                 setenv("NUTJOB_TAP_REPORT_PATH", reportPath, 1);
+            if (const char* txLogPath = xpc_dictionary_get_string(event, "nutjob-tap-transaction-log"))
+                setenv("NUTJOB_TAP_TRANSACTION_LOG", txLogPath, 1);
             if (const char* offsetX = xpc_dictionary_get_string(event, "nutjob-harness-content-offset-x"))
                 setenv("NUTJOB_HARNESS_CONTENT_OFFSET_X", offsetX, 1);
             if (const char* offsetY = xpc_dictionary_get_string(event, "nutjob-harness-content-offset-y"))
