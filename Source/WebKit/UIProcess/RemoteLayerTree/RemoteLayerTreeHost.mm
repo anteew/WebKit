@@ -219,6 +219,14 @@ bool RemoteLayerTreeHost::updateLayerTree(const IPC::Connection& connection, con
         rootLayerChanged = true;
     }
 
+    // Tell the nutjob compositor which layer is the root
+    if (njc_is_active()) {
+        if (rootNode)
+            nutjob_set_root_layer(njc_thread(), njc_layer_id(rootNode->layerID().object().toUInt64()));
+        else
+            WTFLogAlways("njc: rootNode is nil, rootLayerID=%llu", transaction.rootLayerID() ? transaction.rootLayerID()->object().toUInt64() : 0ULL);
+    }
+
     struct LayerAndClone {
         PlatformLayerIdentifier layerID;
         PlatformLayerIdentifier cloneLayerID;
