@@ -635,6 +635,48 @@ void RemoteLayerTreePropertyApplier::applyProperties(RemoteLayerTreeNode& node, 
 
     // Mirror properties to nutjob compositor (runs alongside CoreAnimation)
     applyPropertiesToNutjobCompositor(node.layerID().object().toUInt64(), properties);
+
+    // Capture backing store pixels for nutjob compositor.
+    // Extract the layer's own content (not sublayers) into ARGB pixels.
+    if (njc_is_active()
+        && (properties.changedProperties & LayerChange::BackingStoreChanged
+            || properties.changedProperties & LayerChange::BackingStoreAttachmentChanged)) {
+        RetainPtr layerRef = node.layer();
+        CGRect bounds = [layerRef bounds];
+        int w = static_cast<int>(ceilf(bounds.size.width * [layerRef contentsScale]));
+        int h = static_cast<int>(ceilf(bounds.size.height * [layerRef contentsScale]));
+        if (w > 0 && h > 0 && w <= 4096 && h <= 4096 && [layerRef contents]) {
+            auto colorSpace = adoptCF(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));
+            auto pixelData = std::make_unique<int[]>(w * h);
+            auto ctx = adoptCF(CGBitmapContextCreate(pixelData.get(), w, h, 8, w * 4, colorSpace.get(),
+                static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little));
+            if (ctx) {
+                CGContextScaleCTM(ctx.get(), [layerRef contentsScale], [layerRef contentsScale]);
+
+                // Temporarily hide sublayers so we only capture this layer's own content
+                RetainPtr savedSublayers = [layerRef sublayers];
+                [layerRef setSublayers:nil];
+                [layerRef renderInContext:ctx.get()];
+                [layerRef setSublayers:savedSublayers.get()];
+
+                // renderInContext: produces vertically flipped output (CG origin is
+                // bottom-left). Flip rows to get screen coordinates (top-left origin).
+                for (int row = 0; row < h / 2; row++) {
+                    int oppositeRow = h - 1 - row;
+                    for (int col = 0; col < w; col++) {
+                        int tmp = pixelData[row * w + col];
+                        pixelData[row * w + col] = pixelData[oppositeRow * w + col];
+                        pixelData[oppositeRow * w + col] = tmp;
+                    }
+                }
+
+                nutjob_layer_set_contents(njc_thread(),
+                    njc_layer_id(node.layerID().object().toUInt64()),
+                    pixelData.get(), w, h);
+            }
+        }
+    }
+
     if (properties.changedProperties & LayerChange::EventRegionChanged)
         node.setEventRegion(properties.eventRegion);
     updateMask(node, properties, relatedLayers);
