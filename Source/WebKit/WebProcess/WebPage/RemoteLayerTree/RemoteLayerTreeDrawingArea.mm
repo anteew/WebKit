@@ -58,6 +58,7 @@
 #import <wtf/BlockPtr.h>
 #import <wtf/SetForScope.h>
 #import <wtf/SystemTracing.h>
+#import "../../../Shared/RemoteLayerTree/webkit_remote_layer_nutjob_tap.h"
 #import <wtf/TZoneMallocInlines.h>
 #import <wtf/WorkQueue.h>
 #import <wtf/text/MakeString.h>
@@ -377,6 +378,71 @@ void RemoteLayerTreeDrawingArea::updateRendering()
 
         RefPtr layer = downcast<GraphicsLayerCARemote>(rootLayer.layer.get()).platformCALayer();
         m_remoteLayerTreeContext->buildTransaction(layerTransaction, *layer, rootLayer.frameID);
+
+        // Emit DESTROY_SURFACE for each destroyed layer so nutjob can
+        // immediately remove stale surfaces instead of guessing.
+        if (NutjobTap::isActive() && !layerTransaction.destroyedLayers().isEmpty()) {
+            std::lock_guard lock(NutjobTap::tapMutex());
+            NutjobTap::Writer writer { NutjobTap::tapFile() };
+            for (auto& layerID : layerTransaction.destroyedLayers()) {
+                writer.writeU8(static_cast<uint8_t>(NutjobTap::Command::DestroySurface));
+                writer.writeU64(layerID.object().toUInt64());
+            }
+            fflush(writer.out);
+        }
+
+        // Emit scroll position so nutjob can adjust surface origins.
+        if (NutjobTap::isActive()) {
+            auto scrollPos = layerTransaction.scrollPosition();
+            std::lock_guard lock(NutjobTap::tapMutex());
+            NutjobTap::Writer writer { NutjobTap::tapFile() };
+            writer.writeU8(static_cast<uint8_t>(NutjobTap::Command::ScrollPosition));
+            writer.writeF32(static_cast<float>(scrollPos.x()));
+            writer.writeF32(static_cast<float>(scrollPos.y()));
+            fflush(writer.out);
+        }
+
+        // Transaction log: always log to stderr when tap is active.
+        // This reaches the terminal because XPC inherits stderr from parent.
+        if (NutjobTap::isActive()) {
+            auto& created = layerTransaction.createdLayers();
+            auto& destroyed = layerTransaction.destroyedLayers();
+            auto& changed = layerTransaction.changedLayerProperties();
+
+            if (!created.isEmpty() || !destroyed.isEmpty()) {
+                WTFLogAlways("nutjob tx: created=%zu destroyed=%zu changed=%u",
+                    created.size(), destroyed.size(), changed.size());
+                for (size_t i = 0; i < created.size(); ++i)
+                    WTFLogAlways("nutjob tx:   +layer %llu",
+                        static_cast<unsigned long long>(created[i].layerID->object().toUInt64()));
+                for (size_t i = 0; i < destroyed.size(); ++i)
+                    WTFLogAlways("nutjob tx:   -layer %llu",
+                        static_cast<unsigned long long>(destroyed[i].object().toUInt64()));
+            }
+
+            // Also write to file if available
+            if (auto* txLog = NutjobTap::transactionLogFile()) {
+                ::fprintf(txLog, "{\"created\":%zu,\"destroyed\":%zu,\"changed\":%u",
+                    created.size(), destroyed.size(), changed.size());
+                if (!created.isEmpty()) {
+                    ::fprintf(txLog, ",\"createdIDs\":[");
+                    for (size_t i = 0; i < created.size(); ++i) {
+                        if (i) ::fprintf(txLog, ",");
+                        ::fprintf(txLog, "%llu", static_cast<unsigned long long>(created[i].layerID->object().toUInt64()));
+                    }
+                    ::fprintf(txLog, "]");
+                }
+                if (!destroyed.isEmpty()) {
+                    ::fprintf(txLog, ",\"destroyedIDs\":[");
+                    for (size_t i = 0; i < destroyed.size(); ++i) {
+                        if (i) ::fprintf(txLog, ",");
+                        ::fprintf(txLog, "%llu", static_cast<unsigned long long>(destroyed[i].object().toUInt64()));
+                    }
+                    ::fprintf(txLog, "]");
+                }
+                ::fprintf(txLog, "}\n");
+            }
+        }
 
         webPage->willCommitLayerTree(layerTransaction, rootLayer.frameID);
 

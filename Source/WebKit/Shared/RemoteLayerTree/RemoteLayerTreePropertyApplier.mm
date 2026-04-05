@@ -44,6 +44,9 @@
 #import <WebCore/WebCoreCALayerExtras.h>
 #import <pal/spi/cocoa/QuartzCoreSPI.h>
 #import <wtf/BlockObjCExceptions.h>
+
+// Nutjob compositor integration
+#include "nutjob_compositor.h"
 #import <wtf/cocoa/TypeCastsCocoa.h>
 #import <wtf/cocoa/VectorCocoa.h>
 
@@ -576,11 +579,62 @@ void RemoteLayerTreePropertyApplier::applyPropertiesToLayer(CALayer *layer, Remo
     }
 }
 
+static void applyPropertiesToNutjobCompositor(uint64_t layerID, const LayerProperties& properties)
+{
+    if (!njc_is_active())
+        return;
+
+    auto* t = njc_thread();
+    auto id = njc_layer_id(layerID);
+
+    if (properties.changedProperties & LayerChange::PositionChanged)
+        nutjob_layer_set_position(t, id, properties.position.x(), properties.position.y(), properties.position.z());
+
+    if (properties.changedProperties & LayerChange::AnchorPointChanged)
+        nutjob_layer_set_anchor_point(t, id, properties.anchorPoint.x(), properties.anchorPoint.y(), properties.anchorPoint.z());
+
+    if (properties.changedProperties & LayerChange::BoundsChanged)
+        nutjob_layer_set_bounds(t, id, properties.bounds.x(), properties.bounds.y(), properties.bounds.width(), properties.bounds.height());
+
+    if (properties.changedProperties & LayerChange::OpacityChanged)
+        nutjob_layer_set_opacity(t, id, properties.opacity);
+
+    if (properties.changedProperties & LayerChange::HiddenChanged)
+        nutjob_layer_set_hidden(t, id, properties.hidden ? 1 : 0);
+
+    if (properties.changedProperties & LayerChange::MasksToBoundsChanged)
+        nutjob_layer_set_masks_to_bounds(t, id, properties.masksToBounds ? 1 : 0);
+
+    if (properties.changedProperties & LayerChange::ContentsScaleChanged)
+        nutjob_layer_set_contents_scale(t, id, properties.contentsScale);
+
+    if (properties.changedProperties & LayerChange::GeometryFlippedChanged)
+        nutjob_layer_set_geometry_flipped(t, id, properties.geometryFlipped ? 1 : 0);
+
+    if (properties.changedProperties & LayerChange::BackgroundColorChanged) {
+        auto c = properties.backgroundColor;
+        if (c.isValid()) {
+            auto srgba = c.toColorTypeLossy<WebCore::SRGBA<uint8_t>>().resolved();
+            uint32_t argb = (static_cast<uint32_t>(srgba.alpha) << 24)
+                | (static_cast<uint32_t>(srgba.red) << 16)
+                | (static_cast<uint32_t>(srgba.green) << 8)
+                | static_cast<uint32_t>(srgba.blue);
+            nutjob_layer_set_background_color(t, id, static_cast<int>(argb));
+        }
+    }
+
+    if (properties.changedProperties & LayerChange::BlendModeChanged)
+        nutjob_layer_set_blend_mode(t, id, static_cast<int>(properties.blendMode));
+}
+
 void RemoteLayerTreePropertyApplier::applyProperties(RemoteLayerTreeNode& node, RemoteLayerTreeHost* layerTreeHost, const LayerProperties& properties, const RelatedLayerMap& relatedLayers)
 {
     BEGIN_BLOCK_OBJC_EXCEPTIONS
 
     applyPropertiesToLayer(protect(node.layer()).get(), &node, layerTreeHost, properties);
+
+    // Mirror properties to nutjob compositor (runs alongside CoreAnimation)
+    applyPropertiesToNutjobCompositor(node.layerID().object().toUInt64(), properties);
     if (properties.changedProperties & LayerChange::EventRegionChanged)
         node.setEventRegion(properties.eventRegion);
     updateMask(node, properties, relatedLayers);
@@ -691,6 +745,17 @@ void RemoteLayerTreePropertyApplier::applyHierarchyUpdates(RemoteLayerTreeNode& 
 #if ENABLE(OVERLAY_REGIONS_REMOTE_EFFECT)
     node.updateOverlayRegionAfterHierarchyChange();
 #endif
+
+    // Mirror children to nutjob compositor
+    if (njc_is_active() && !properties.children.isEmpty()) {
+        auto count = properties.children.size();
+        auto childInts = std::make_unique<int[]>(count);
+        for (size_t i = 0; i < count; ++i)
+            childInts[i] = static_cast<int>(properties.children[i].object().toUInt64());
+        nutjob_layer_set_children(njc_thread(),
+            njc_layer_id(node.layerID().object().toUInt64()),
+            childInts.get(), static_cast<int>(count));
+    }
 
     END_BLOCK_OBJC_EXCEPTIONS
 }

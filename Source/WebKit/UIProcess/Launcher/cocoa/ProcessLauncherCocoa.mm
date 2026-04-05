@@ -423,6 +423,10 @@ void ProcessLauncher::finishLaunchingProcess(ASCIILiteral name)
                 if (*reportPath)
                     xpc_dictionary_set_string(bootstrapMessage.get(), "nutjob-tap-report-path", reportPath);
             }
+            if (const char* txLogPath = getenv("NUTJOB_TAP_TRANSACTION_LOG")) {
+                if (*txLogPath)
+                    xpc_dictionary_set_string(bootstrapMessage.get(), "nutjob-tap-transaction-log", txLogPath);
+            }
             if (const char* offsetX = getenv("NUTJOB_HARNESS_CONTENT_OFFSET_X")) {
                 if (*offsetX)
                     xpc_dictionary_set_string(bootstrapMessage.get(), "nutjob-harness-content-offset-x", offsetX);
