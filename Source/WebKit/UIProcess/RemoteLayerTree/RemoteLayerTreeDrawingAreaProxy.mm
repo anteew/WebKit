@@ -427,8 +427,55 @@ void RemoteLayerTreeDrawingAreaProxy::commitLayerTree(IPC::Connection& connectio
         }
     }
 
-    if (beganNutjobTransaction)
+    if (beganNutjobTransaction) {
         nutjob_compositor_transaction_end(njc_thread());
+
+        // Present compositor pixels as overlay — covers CA's output
+        if (m_remoteLayerTreeHost) {
+            RetainPtr rootLayer = m_remoteLayerTreeHost->rootLayer();
+            if (rootLayer) {
+                static CALayer* njcOverlay = nil;
+                static CALayer* njcOverlayParent = nil;
+                if (!njcOverlay || njcOverlayParent != rootLayer.get()) {
+                    if (njcOverlay)
+                        [njcOverlay removeFromSuperlayer];
+                    njcOverlay = [[CALayer alloc] init];
+                    [njcOverlay setName:@"NutjobCompositorOverlay"];
+                    [njcOverlay setZPosition:10000];
+                    [njcOverlay setAnchorPoint:CGPointZero];
+                    [njcOverlay setOpaque:YES];
+                    [njcOverlay setBackgroundColor:[[NSColor whiteColor] CGColor]];
+                    // Flip the overlay so our top-left-origin pixels display correctly
+                    [njcOverlay setTransform:CATransform3DMakeScale(1, -1, 1)];
+                    [rootLayer addSublayer:njcOverlay];
+                    njcOverlayParent = rootLayer.get();
+                }
+                CGRect rootFrame = [rootLayer frame];
+                if (CGRectIsEmpty(rootFrame))
+                    rootFrame = CGRectMake(0, 0, 1180, 900);
+                [njcOverlay setFrame:rootFrame];
+
+                // Read compositor pixels
+                int w = 1180, h = 900;
+                size_t dataSize = w * h * 4;
+                auto pixelData = static_cast<int*>(malloc(dataSize));
+                nutjob_compositor_get_pixels(njc_thread(), pixelData, w, h);
+
+                auto colorSpace = adoptCF(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));
+                auto provider = adoptCF(CGDataProviderCreateWithData(nullptr, pixelData, dataSize,
+                    [](void*, const void* data, size_t) { free(const_cast<void*>(data)); }));
+                auto image = adoptCF(CGImageCreate(w, h, 8, 32, w * 4, colorSpace.get(),
+                    static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little,
+                    provider.get(), nullptr, false, kCGRenderingIntentDefault));
+
+                [CATransaction begin];
+                [CATransaction setDisableActions:YES];
+                [njcOverlay setContents:(__bridge id)image.get()];
+                [njcOverlay setContentsGravity:kCAGravityResize];
+                [CATransaction commit];
+            }
+        }
+    }
 
     for (auto& callbackID : bundle.pageData.callbackIDs) {
         removeOutstandingPresentationUpdateCallback(connection, callbackID);

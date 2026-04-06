@@ -659,14 +659,38 @@ void RemoteLayerTreePropertyApplier::applyProperties(RemoteLayerTreeNode& node, 
                 [layerRef renderInContext:ctx.get()];
                 [layerRef setSublayers:savedSublayers.get()];
 
-                // renderInContext: produces vertically flipped output (CG origin is bottom-left).
-                // Flip rows to get screen coordinates (top-left origin).
-                for (int row = 0; row < h / 2; row++) {
-                    int oppositeRow = h - 1 - row;
-                    for (int col = 0; col < w; col++) {
-                        int tmp = pixelData[row * w + col];
-                        pixelData[row * w + col] = pixelData[oppositeRow * w + col];
-                        pixelData[oppositeRow * w + col] = tmp;
+                // Diagnostic: sample pixels before any flip to understand orientation.
+                // Pixel at row 0 (CG bottom) and row h-1 (CG top).
+                int topLeft = pixelData[0];                    // CG row 0 = bottom of rendered content
+                int botLeft = pixelData[(h - 1) * w];          // CG row h-1 = top of rendered content
+                // Alpha of each — nonzero means content is there
+                int topAlpha = (topLeft >> 24) & 0xFF;
+                int botAlpha = (botLeft >> 24) & 0xFF;
+
+                WTFLogAlways("njc: TILE layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d "
+                    "row0alpha=%d rowLastAlpha=%d (before flip)",
+                    static_cast<unsigned long long>(node.layerID().object().toUInt64()),
+                    w, h, [layerRef contentsAreFlipped], [layerRef isGeometryFlipped],
+                    topAlpha, botAlpha);
+
+                if ([layerRef contentsAreFlipped]) {
+                    // contentsFlipped=1: just vertical flip (CG origin correction)
+                    for (int row = 0; row < h / 2; row++) {
+                        int oppositeRow = h - 1 - row;
+                        for (int col = 0; col < w; col++) {
+                            int tmp = pixelData[row * w + col];
+                            pixelData[row * w + col] = pixelData[oppositeRow * w + col];
+                            pixelData[oppositeRow * w + col] = tmp;
+                        }
+                    }
+                } else {
+                    // contentsFlipped=0: 180° rotation (vertical + horizontal flip)
+                    int total = w * h;
+                    for (int i = 0; i < total / 2; i++) {
+                        int j = total - 1 - i;
+                        int tmp = pixelData[i];
+                        pixelData[i] = pixelData[j];
+                        pixelData[j] = tmp;
                     }
                 }
 
