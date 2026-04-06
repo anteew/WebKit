@@ -248,7 +248,10 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     int pixelCount = width * height;
     auto pixels = unsafeMakeSpan(pixelData.get(), static_cast<size_t>(pixelCount));
     int sourceHashBeforeNormalization = nutjobJavaIntArrayHash(pixels);
-    NutjobTileNormalization normalization = NutjobTileNormalization::None;
+    // With a top-left bitmap context, contentsAreFlipped=true tiles now land in
+    // canonical orientation directly. contentsAreFlipped=false tiles still
+    // arrive upside down (but not mirrored), so a row flip corrects them.
+    NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::None : NutjobTileNormalization::VerticalFlip;
     if (nutjobCGPolesEnabled()) {
         nutjobStampCGContextPoles(context.get(), bounds, contentsScale);
         CGContextFlush(context.get());
