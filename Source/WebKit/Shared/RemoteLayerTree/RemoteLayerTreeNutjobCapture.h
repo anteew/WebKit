@@ -103,6 +103,26 @@ static inline bool nutjobTilePolesEnabled()
     return enabled;
 }
 
+static inline bool nutjobCGPolesEnabled()
+{
+    static bool enabled = [] {
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_CG_POLES"))
+            return value[0] == '1';
+        return nutjobTilePolesEnabled();
+    }();
+    return enabled;
+}
+
+static inline bool nutjobLogContextCTMEnabled()
+{
+    static bool enabled = [] {
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_LOG_CTM"))
+            return value[0] == '1';
+        return nutjobCGPolesEnabled();
+    }();
+    return enabled;
+}
+
 static inline void nutjobFillTileMarker(std::span<int> pixels, int width, int height, int startX, int startY, int markerWidth, int markerHeight, int color)
 {
     for (int row = startY; row < startY + markerHeight; ++row) {
@@ -147,10 +167,54 @@ static inline void nutjobStampRawTilePoles(std::span<int> pixels, int width, int
     nutjobFillTileMarker(pixels, width, height, std::max(0, width - insetX - markerWidth), std::max(0, height - insetY - markerHeight), markerWidth, markerHeight, violet);
 }
 
+static inline void nutjobFillCGContextMarker(CGContextRef context, CGRect rect, CGFloat red, CGFloat green, CGFloat blue)
+{
+    CGContextSetRGBFillColor(context, red, green, blue, 1);
+    CGContextFillRect(context, rect);
+}
+
+static inline void nutjobStampCGContextPoles(CGContextRef context, CGRect bounds, float contentsScale)
+{
+    CGFloat scale = std::max<CGFloat>(contentsScale, 1);
+    CGFloat markerWidth = std::max<CGFloat>(1 / scale, std::min(bounds.size.width / 8, 6.0));
+    CGFloat markerHeight = std::max<CGFloat>(1 / scale, std::min(bounds.size.height / 8, 6.0));
+    CGFloat insetX = std::max<CGFloat>(0, std::min(bounds.size.width - markerWidth, markerWidth * 3));
+    CGFloat insetY = std::max<CGFloat>(0, std::min(bounds.size.height - markerHeight, markerHeight * 3));
+
+    CGContextSaveGState(context);
+    nutjobFillCGContextMarker(context, CGRectMake(insetX, insetY, markerWidth, markerHeight), 0, 0, 0);
+    nutjobFillCGContextMarker(context, CGRectMake(std::max<CGFloat>(0, bounds.size.width - insetX - markerWidth), insetY, markerWidth, markerHeight), 0, 0.7, 0.7);
+    nutjobFillCGContextMarker(context, CGRectMake(insetX, std::max<CGFloat>(0, bounds.size.height - insetY - markerHeight), markerWidth, markerHeight), 1, 0.4, 0.7);
+    nutjobFillCGContextMarker(context, CGRectMake(std::max<CGFloat>(0, bounds.size.width - insetX - markerWidth), std::max<CGFloat>(0, bounds.size.height - insetY - markerHeight), markerWidth, markerHeight), 0.5, 0.5, 0);
+    CGContextRestoreGState(context);
+}
+
+static inline void nutjobLogContextCTM(CGContextRef context, const char* stage, NutjobTileIngressPath ingressPath, uint64_t layerID, CGRect bounds, float contentsScale, bool contentsAreFlipped, bool geometryFlipped)
+{
+    CGAffineTransform ctm = CGContextGetCTM(context);
+    WTFLogAlways("njc: CTM stage=%s path=%s layer=%llu bounds=%gx%g scale=%g contentsFlipped=%d geomFlipped=%d ctm=[%g %g %g %g %g %g]",
+        stage,
+        nutjobTileIngressPathName(ingressPath),
+        static_cast<unsigned long long>(layerID),
+        bounds.size.width,
+        bounds.size.height,
+        contentsScale,
+        contentsAreFlipped,
+        geometryFlipped,
+        ctm.a,
+        ctm.b,
+        ctm.c,
+        ctm.d,
+        ctm.tx,
+        ctm.ty);
+}
+
 static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsForNutjob(CALayer *layer, uint64_t layerID, NutjobTileIngressPath ingressPath)
 {
     CGRect bounds = [layer bounds];
     float contentsScale = [layer contentsScale];
+    bool contentsAreFlipped = [layer contentsAreFlipped];
+    bool geometryFlipped = [layer isGeometryFlipped];
     int width = static_cast<int>(ceilf(bounds.size.width * contentsScale));
     int height = static_cast<int>(ceilf(bounds.size.height * contentsScale));
     if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || ![layer contents])
@@ -164,18 +228,26 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
         return std::nullopt;
 
     CGContextScaleCTM(context.get(), contentsScale, contentsScale);
+    if (nutjobLogContextCTMEnabled())
+        nutjobLogContextCTM(context.get(), "after-setup", ingressPath, layerID, bounds, contentsScale, contentsAreFlipped, geometryFlipped);
 
     RetainPtr savedSublayers = [layer sublayers];
     [layer setSublayers:nil];
     [layer renderInContext:context.get()];
     [layer setSublayers:savedSublayers.get()];
+    if (nutjobLogContextCTMEnabled())
+        nutjobLogContextCTM(context.get(), "after-render", ingressPath, layerID, bounds, contentsScale, contentsAreFlipped, geometryFlipped);
 
     int pixelCount = width * height;
     auto pixels = unsafeMakeSpan(pixelData.get(), static_cast<size_t>(pixelCount));
     int sourceHashBeforeNormalization = nutjobJavaIntArrayHash(pixels);
-    bool contentsAreFlipped = [layer contentsAreFlipped];
-    bool geometryFlipped = [layer isGeometryFlipped];
     NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::None : NutjobTileNormalization::Rotate180;
+    if (nutjobCGPolesEnabled()) {
+        nutjobStampCGContextPoles(context.get(), bounds, contentsScale);
+        CGContextFlush(context.get());
+        if (nutjobLogContextCTMEnabled())
+            nutjobLogContextCTM(context.get(), "after-cg-probe", ingressPath, layerID, bounds, contentsScale, contentsAreFlipped, geometryFlipped);
+    }
     if (nutjobTilePolesEnabled())
         nutjobStampRawTilePoles(pixels, width, height);
     switch (normalization) {
@@ -193,7 +265,7 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
         nutjobStampTilePoles(pixels, width, height);
 
     int normalizedHash = nutjobJavaIntArrayHash(pixels);
-    WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s poles=%d rawPoles=%d hashBefore=%d hashAfter=%d",
+    WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s poles=%d rawPoles=%d cgPoles=%d hashBefore=%d hashAfter=%d",
         nutjobTileIngressPathName(ingressPath),
         static_cast<unsigned long long>(layerID),
         width, height,
@@ -202,6 +274,7 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
         nutjobTileNormalizationName(normalization),
         nutjobTilePolesEnabled(),
         nutjobTilePolesEnabled(),
+        nutjobCGPolesEnabled(),
         sourceHashBeforeNormalization,
         normalizedHash);
 
