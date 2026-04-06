@@ -32,6 +32,7 @@
 #import "RemoteLayerTreeDrawingAreaProxy.h"
 #import "RemoteLayerTreeHost.h"
 #import "RemoteLayerTreeInteractionRegionLayers.h"
+#import "RemoteLayerTreeNutjobCapture.h"
 #import "WKVideoView.h"
 #import "WebPageProxy.h"
 #import <QuartzCore/QuartzCore.h>
@@ -641,63 +642,21 @@ void RemoteLayerTreePropertyApplier::applyProperties(RemoteLayerTreeNode& node, 
     if (njc_is_active()
         && (properties.changedProperties & LayerChange::BackingStoreChanged
             || properties.changedProperties & LayerChange::BackingStoreAttachmentChanged)) {
-        RetainPtr layerRef = node.layer();
-        CGRect bounds = [layerRef bounds];
-        int w = static_cast<int>(ceilf(bounds.size.width * [layerRef contentsScale]));
-        int h = static_cast<int>(ceilf(bounds.size.height * [layerRef contentsScale]));
-        if (w > 0 && h > 0 && w <= 4096 && h <= 4096 && [layerRef contents]) {
-            auto colorSpace = adoptCF(CGColorSpaceCreateWithName(kCGColorSpaceSRGB));
-            auto pixelData = std::make_unique<int[]>(w * h);
-            auto ctx = adoptCF(CGBitmapContextCreate(pixelData.get(), w, h, 8, w * 4, colorSpace.get(),
-                static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) | kCGBitmapByteOrder32Little));
-            if (ctx) {
-                CGContextScaleCTM(ctx.get(), [layerRef contentsScale], [layerRef contentsScale]);
-
-                // Temporarily hide sublayers so we only capture this layer's own content
-                RetainPtr savedSublayers = [layerRef sublayers];
-                [layerRef setSublayers:nil];
-                [layerRef renderInContext:ctx.get()];
-                [layerRef setSublayers:savedSublayers.get()];
-
-                // Diagnostic: sample pixels before any flip to understand orientation.
-                // Pixel at row 0 (CG bottom) and row h-1 (CG top).
-                int topLeft = pixelData[0];                    // CG row 0 = bottom of rendered content
-                int botLeft = pixelData[(h - 1) * w];          // CG row h-1 = top of rendered content
-                // Alpha of each — nonzero means content is there
-                int topAlpha = (topLeft >> 24) & 0xFF;
-                int botAlpha = (botLeft >> 24) & 0xFF;
-
-                WTFLogAlways("njc: TILE layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d "
-                    "row0alpha=%d rowLastAlpha=%d (before flip)",
-                    static_cast<unsigned long long>(node.layerID().object().toUInt64()),
-                    w, h, [layerRef contentsAreFlipped], [layerRef isGeometryFlipped],
-                    topAlpha, botAlpha);
-
-                if ([layerRef contentsAreFlipped]) {
-                    // contentsFlipped=1: just vertical flip (CG origin correction)
-                    for (int row = 0; row < h / 2; row++) {
-                        int oppositeRow = h - 1 - row;
-                        for (int col = 0; col < w; col++) {
-                            int tmp = pixelData[row * w + col];
-                            pixelData[row * w + col] = pixelData[oppositeRow * w + col];
-                            pixelData[oppositeRow * w + col] = tmp;
-                        }
-                    }
-                } else {
-                    // contentsFlipped=0: 180° rotation (vertical + horizontal flip)
-                    int total = w * h;
-                    for (int i = 0; i < total / 2; i++) {
-                        int j = total - 1 - i;
-                        int tmp = pixelData[i];
-                        pixelData[i] = pixelData[j];
-                        pixelData[j] = tmp;
-                    }
-                }
-
-                nutjob_layer_set_contents(njc_thread(),
-                    njc_layer_id(node.layerID().object().toUInt64()),
-                    pixelData.get(), w, h);
-            }
+        nutjob_compositor_ensure_initialized(njc_thread(), 1180, 900);
+        uint64_t layerID = node.layerID().object().toUInt64();
+        if (auto captured = captureLayerContentsForNutjob(node.layer().get(), layerID, NutjobTileIngressPath::Transaction)) {
+            nutjob_layer_set_contents_with_metadata(njc_thread(),
+                njc_layer_id(layerID),
+                captured->pixels.get(),
+                captured->width,
+                captured->height,
+                static_cast<int>(NutjobTileIngressPath::Transaction),
+                captured->contentsAreFlipped ? 1 : 0,
+                captured->geometryFlipped ? 1 : 0,
+                static_cast<int>(captured->normalization),
+                captured->contentsScale,
+                static_cast<long>(properties.changedProperties.toRaw()),
+                captured->sourceHashBeforeNormalization);
         }
     }
 
