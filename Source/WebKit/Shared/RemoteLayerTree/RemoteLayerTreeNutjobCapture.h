@@ -127,6 +127,26 @@ static inline void nutjobStampTilePoles(std::span<int> pixels, int width, int he
     nutjobFillTileMarker(pixels, width, height, width - markerWidth, height - markerHeight, markerWidth, markerHeight, yellow);
 }
 
+static inline void nutjobStampRawTilePoles(std::span<int> pixels, int width, int height)
+{
+    constexpr int magenta = static_cast<int>(0xFFFF00FFu);
+    constexpr int cyan = static_cast<int>(0xFF00FFFFu);
+    constexpr int orange = static_cast<int>(0xFFFF8800u);
+    constexpr int violet = static_cast<int>(0xFF7C3AEDu);
+
+    int canonicalMarkerWidth = std::max(1, std::min(width / 6, 16));
+    int canonicalMarkerHeight = std::max(1, std::min(height / 6, 16));
+    int markerWidth = std::max(1, std::min(canonicalMarkerWidth, 8));
+    int markerHeight = std::max(1, std::min(canonicalMarkerHeight, 8));
+    int insetX = std::max(0, std::min(width - markerWidth, canonicalMarkerWidth + 4));
+    int insetY = std::max(0, std::min(height - markerHeight, canonicalMarkerHeight + 4));
+
+    nutjobFillTileMarker(pixels, width, height, insetX, insetY, markerWidth, markerHeight, magenta);
+    nutjobFillTileMarker(pixels, width, height, std::max(0, width - insetX - markerWidth), insetY, markerWidth, markerHeight, cyan);
+    nutjobFillTileMarker(pixels, width, height, insetX, std::max(0, height - insetY - markerHeight), markerWidth, markerHeight, orange);
+    nutjobFillTileMarker(pixels, width, height, std::max(0, width - insetX - markerWidth), std::max(0, height - insetY - markerHeight), markerWidth, markerHeight, violet);
+}
+
 static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsForNutjob(CALayer *layer, uint64_t layerID, NutjobTileIngressPath ingressPath)
 {
     CGRect bounds = [layer bounds];
@@ -156,6 +176,8 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     bool contentsAreFlipped = [layer contentsAreFlipped];
     bool geometryFlipped = [layer isGeometryFlipped];
     NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::None : NutjobTileNormalization::Rotate180;
+    if (nutjobTilePolesEnabled())
+        nutjobStampRawTilePoles(pixels, width, height);
     switch (normalization) {
     case NutjobTileNormalization::None:
         break;
@@ -171,13 +193,14 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
         nutjobStampTilePoles(pixels, width, height);
 
     int normalizedHash = nutjobJavaIntArrayHash(pixels);
-    WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s poles=%d hashBefore=%d hashAfter=%d",
+    WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s poles=%d rawPoles=%d hashBefore=%d hashAfter=%d",
         nutjobTileIngressPathName(ingressPath),
         static_cast<unsigned long long>(layerID),
         width, height,
         contentsAreFlipped, geometryFlipped,
         contentsScale,
         nutjobTileNormalizationName(normalization),
+        nutjobTilePolesEnabled(),
         nutjobTilePolesEnabled(),
         sourceHashBeforeNormalization,
         normalizedHash);
