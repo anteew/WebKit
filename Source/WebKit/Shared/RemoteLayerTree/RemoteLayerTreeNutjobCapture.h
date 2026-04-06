@@ -8,11 +8,13 @@
 
 #import <QuartzCore/QuartzCore.h>
 #import <wtf/RetainPtr.h>
+#import <wtf/StdLibExtras.h>
 
 #include <cmath>
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <utility>
 
 namespace WebKit {
@@ -65,15 +67,15 @@ static inline const char* nutjobTileNormalizationName(NutjobTileNormalization no
     return "unknown";
 }
 
-static inline int nutjobJavaIntArrayHash(const int* pixels, int count)
+static inline int nutjobJavaIntArrayHash(std::span<const int> pixels)
 {
     uint32_t hash = 1;
-    for (int i = 0; i < count; ++i)
-        hash = (31u * hash) + static_cast<uint32_t>(pixels[i]);
+    for (int pixel : pixels)
+        hash = (31u * hash) + static_cast<uint32_t>(pixel);
     return static_cast<int32_t>(hash);
 }
 
-static inline void nutjobFlipPixelRows(int* pixels, int width, int height)
+static inline void nutjobFlipPixelRows(std::span<int> pixels, int width, int height)
 {
     for (int row = 0; row < height / 2; ++row) {
         int oppositeRow = height - 1 - row;
@@ -82,8 +84,9 @@ static inline void nutjobFlipPixelRows(int* pixels, int width, int height)
     }
 }
 
-static inline void nutjobRotatePixels180(int* pixels, int count)
+static inline void nutjobRotatePixels180(std::span<int> pixels)
 {
+    int count = static_cast<int>(pixels.size());
     for (int i = 0; i < count / 2; ++i)
         std::swap(pixels[i], pixels[count - 1 - i]);
 }
@@ -112,7 +115,8 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     [layer setSublayers:savedSublayers.get()];
 
     int pixelCount = width * height;
-    int sourceHashBeforeNormalization = nutjobJavaIntArrayHash(pixelData.get(), pixelCount);
+    auto pixels = unsafeMakeSpan(pixelData.get(), static_cast<size_t>(pixelCount));
+    int sourceHashBeforeNormalization = nutjobJavaIntArrayHash(pixels);
     bool contentsAreFlipped = [layer contentsAreFlipped];
     bool geometryFlipped = [layer isGeometryFlipped];
     NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::VerticalFlip : NutjobTileNormalization::Rotate180;
@@ -120,14 +124,14 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     case NutjobTileNormalization::None:
         break;
     case NutjobTileNormalization::VerticalFlip:
-        nutjobFlipPixelRows(pixelData.get(), width, height);
+        nutjobFlipPixelRows(pixels, width, height);
         break;
     case NutjobTileNormalization::Rotate180:
-        nutjobRotatePixels180(pixelData.get(), pixelCount);
+        nutjobRotatePixels180(pixels);
         break;
     }
 
-    int normalizedHash = nutjobJavaIntArrayHash(pixelData.get(), pixelCount);
+    int normalizedHash = nutjobJavaIntArrayHash(pixels);
     WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s hashBefore=%d hashAfter=%d",
         nutjobTileIngressPathName(ingressPath),
         static_cast<unsigned long long>(layerID),

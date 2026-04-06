@@ -31,7 +31,7 @@
 #import "Logging.h"
 #import "RemoteLayerTreeCommitBundle.h"
 #import "RemoteLayerTreeDrawingAreaProxy.h"
-#import "RemoteLayerTreeNutjobCapture.h"
+#import "../../Shared/RemoteLayerTree/RemoteLayerTreeNutjobCapture.h"
 #import "RemoteLayerTreePropertyApplier.h"
 #import "RemoteLayerTreeTransaction.h"
 #import "VideoPresentationManagerProxy.h"
@@ -290,7 +290,7 @@ void RemoteLayerTreeHost::asyncSetLayerContents(PlatformLayerIdentifier layerID,
 
     nutjob_compositor_ensure_initialized(njc_thread(), 1180, 900);
     uint64_t rawLayerID = node->layerID().object().toUInt64();
-    if (auto captured = captureLayerContentsForNutjob(node->layer().get(), rawLayerID, NutjobTileIngressPath::Async)) {
+    if (auto captured = captureLayerContentsForNutjob(node->layer(), rawLayerID, NutjobTileIngressPath::Async)) {
         nutjob_layer_set_contents_with_metadata(njc_thread(),
             njc_layer_id(rawLayerID),
             captured->pixels.get(),

@@ -644,7 +644,7 @@ void RemoteLayerTreePropertyApplier::applyProperties(RemoteLayerTreeNode& node, 
             || properties.changedProperties & LayerChange::BackingStoreAttachmentChanged)) {
         nutjob_compositor_ensure_initialized(njc_thread(), 1180, 900);
         uint64_t layerID = node.layerID().object().toUInt64();
-        if (auto captured = captureLayerContentsForNutjob(node.layer().get(), layerID, NutjobTileIngressPath::Transaction)) {
+        if (auto captured = captureLayerContentsForNutjob(node.layer(), layerID, NutjobTileIngressPath::Transaction)) {
             nutjob_layer_set_contents_with_metadata(njc_thread(),
                 njc_layer_id(layerID),
                 captured->pixels.get(),
