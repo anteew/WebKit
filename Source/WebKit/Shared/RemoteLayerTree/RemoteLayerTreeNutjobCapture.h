@@ -209,6 +209,13 @@ static inline void nutjobLogContextCTM(CGContextRef context, const char* stage, 
         ctm.ty);
 }
 
+static inline void nutjobConfigureTopLeftCaptureContext(CGContextRef context, CGRect bounds, float contentsScale)
+{
+    // Match the common WebKit bitmap-context convention: row 0 should represent visual top.
+    CGContextScaleCTM(context, contentsScale, -contentsScale);
+    CGContextTranslateCTM(context, 0, -bounds.size.height);
+}
+
 static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsForNutjob(CALayer *layer, uint64_t layerID, NutjobTileIngressPath ingressPath)
 {
     CGRect bounds = [layer bounds];
@@ -227,7 +234,7 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     if (!context)
         return std::nullopt;
 
-    CGContextScaleCTM(context.get(), contentsScale, contentsScale);
+    nutjobConfigureTopLeftCaptureContext(context.get(), bounds, contentsScale);
     if (nutjobLogContextCTMEnabled())
         nutjobLogContextCTM(context.get(), "after-setup", ingressPath, layerID, bounds, contentsScale, contentsAreFlipped, geometryFlipped);
 
@@ -241,7 +248,7 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     int pixelCount = width * height;
     auto pixels = unsafeMakeSpan(pixelData.get(), static_cast<size_t>(pixelCount));
     int sourceHashBeforeNormalization = nutjobJavaIntArrayHash(pixels);
-    NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::None : NutjobTileNormalization::Rotate180;
+    NutjobTileNormalization normalization = NutjobTileNormalization::None;
     if (nutjobCGPolesEnabled()) {
         nutjobStampCGContextPoles(context.get(), bounds, contentsScale);
         CGContextFlush(context.get());
