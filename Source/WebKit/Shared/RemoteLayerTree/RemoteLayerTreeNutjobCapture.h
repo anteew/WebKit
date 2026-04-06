@@ -119,7 +119,7 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
     int sourceHashBeforeNormalization = nutjobJavaIntArrayHash(pixels);
     bool contentsAreFlipped = [layer contentsAreFlipped];
     bool geometryFlipped = [layer isGeometryFlipped];
-    NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::VerticalFlip : NutjobTileNormalization::Rotate180;
+    NutjobTileNormalization normalization = contentsAreFlipped ? NutjobTileNormalization::None : NutjobTileNormalization::Rotate180;
     switch (normalization) {
     case NutjobTileNormalization::None:
         break;
