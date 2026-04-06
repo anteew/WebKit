@@ -10,7 +10,9 @@
 #import <wtf/RetainPtr.h>
 #import <wtf/StdLibExtras.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -91,6 +93,40 @@ static inline void nutjobRotatePixels180(std::span<int> pixels)
         std::swap(pixels[i], pixels[count - 1 - i]);
 }
 
+static inline bool nutjobTilePolesEnabled()
+{
+    static bool enabled = [] {
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_TILE_POLES"))
+            return value[0] == '1';
+        return false;
+    }();
+    return enabled;
+}
+
+static inline void nutjobFillTileMarker(std::span<int> pixels, int width, int height, int startX, int startY, int markerWidth, int markerHeight, int color)
+{
+    for (int row = startY; row < startY + markerHeight; ++row) {
+        for (int column = startX; column < startX + markerWidth; ++column)
+            pixels[row * width + column] = color;
+    }
+}
+
+static inline void nutjobStampTilePoles(std::span<int> pixels, int width, int height)
+{
+    constexpr int red = static_cast<int>(0xFFFF0000u);
+    constexpr int green = static_cast<int>(0xFF00FF00u);
+    constexpr int blue = static_cast<int>(0xFF0000FFu);
+    constexpr int yellow = static_cast<int>(0xFFFFFF00u);
+
+    int markerWidth = std::max(1, std::min(width / 6, 16));
+    int markerHeight = std::max(1, std::min(height / 6, 16));
+
+    nutjobFillTileMarker(pixels, width, height, 0, 0, markerWidth, markerHeight, red);
+    nutjobFillTileMarker(pixels, width, height, width - markerWidth, 0, markerWidth, markerHeight, green);
+    nutjobFillTileMarker(pixels, width, height, 0, height - markerHeight, markerWidth, markerHeight, blue);
+    nutjobFillTileMarker(pixels, width, height, width - markerWidth, height - markerHeight, markerWidth, markerHeight, yellow);
+}
+
 static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsForNutjob(CALayer *layer, uint64_t layerID, NutjobTileIngressPath ingressPath)
 {
     CGRect bounds = [layer bounds];
@@ -131,14 +167,18 @@ static inline std::optional<NutjobCapturedLayerContents> captureLayerContentsFor
         break;
     }
 
+    if (nutjobTilePolesEnabled())
+        nutjobStampTilePoles(pixels, width, height);
+
     int normalizedHash = nutjobJavaIntArrayHash(pixels);
-    WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s hashBefore=%d hashAfter=%d",
+    WTFLogAlways("njc: TILE path=%s layer=%llu %dx%d contentsFlipped=%d geomFlipped=%d scale=%g normalization=%s poles=%d hashBefore=%d hashAfter=%d",
         nutjobTileIngressPathName(ingressPath),
         static_cast<unsigned long long>(layerID),
         width, height,
         contentsAreFlipped, geometryFlipped,
         contentsScale,
         nutjobTileNormalizationName(normalization),
+        nutjobTilePolesEnabled(),
         sourceHashBeforeNormalization,
         normalizedHash);
 
