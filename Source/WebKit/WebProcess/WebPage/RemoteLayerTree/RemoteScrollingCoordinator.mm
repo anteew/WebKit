@@ -32,6 +32,7 @@
 #import "GraphicsLayerCARemote.h"
 #import "Logging.h"
 #import "RemoteLayerTreeDrawingArea.h"
+#include "../../../Shared/RemoteLayerTree/RemoteLayerTreeNutjobScrollingBreadcrumbs.h"
 #import "RemoteScrollingCoordinatorMessages.h"
 #import "RemoteScrollingCoordinatorTransaction.h"
 #import "RemoteScrollingUIState.h"
@@ -112,12 +113,41 @@ RemoteScrollingCoordinatorTransaction RemoteScrollingCoordinator::buildTransacti
 {
     willCommitTree(rootFrameID);
 
-    return {
+    auto transaction = RemoteScrollingCoordinatorTransaction {
         protect(ensureScrollingStateTreeForRootFrameID(rootFrameID))->commit(LayerRepresentation::PlatformLayerIDRepresentation),
         std::exchange(m_clearScrollLatchingInNextTransaction, false),
         { },
         RemoteScrollingCoordinatorTransaction::FromDeserialization::No
     };
+
+    if (nutjobScrollBreadcrumbsEnabled()) {
+        auto summary = nutjobSummarizeScrollingTransaction(transaction, rootFrameID);
+        WTFLogAlways("njc-scroll: build frame=%llu clearLatching=%d treeChanged=%d newRoot=%d nodes=%u scrollingNodes=%u rootNode=%llu rootChanged=0x%llx scrollPos=(%g,%g) origin=(%d,%d) layoutViewport=(%g,%g %gx%g) visible=(%gx%g) layers(root=%llu container=%llu scrolled=%llu) requested=%u",
+            summary.frameID,
+            summary.clearScrollLatching,
+            summary.hasChangedProperties,
+            summary.hasNewRootStateNode,
+            summary.nodeCount,
+            summary.scrollingNodeCount,
+            summary.rootNodeID,
+            summary.rootChangedProperties,
+            summary.scrollPositionX,
+            summary.scrollPositionY,
+            summary.scrollOriginX,
+            summary.scrollOriginY,
+            summary.layoutViewportX,
+            summary.layoutViewportY,
+            summary.layoutViewportWidth,
+            summary.layoutViewportHeight,
+            summary.visibleContentWidth,
+            summary.visibleContentHeight,
+            summary.rootContentsLayerID,
+            summary.scrollContainerLayerID,
+            summary.scrolledContentsLayerID,
+            summary.requestedScrollCount);
+    }
+
+    return transaction;
 }
 
 void RemoteScrollingCoordinator::willSendScrollPositionRequest(ScrollingNodeID nodeID, RequestedScrollData& request)
@@ -311,6 +341,17 @@ void RemoteScrollingCoordinator::stopDeferringScrollingTestCompletionForNode(Web
 WheelEventHandlingResult RemoteScrollingCoordinator::handleWheelEventForScrolling(const PlatformWheelEvent& wheelEvent, ScrollingNodeID targetNodeID, std::optional<WheelScrollGestureState> gestureState)
 {
     LOG_WITH_STREAM(Scrolling, stream << "RemoteScrollingCoordinator::handleWheelEventForScrolling " << wheelEvent << " - node " << targetNodeID << " gestureState " << gestureState << " will start swipe " << (m_currentWheelEventWillStartSwipe && *m_currentWheelEventWillStartSwipe));
+
+    if (nutjobScrollBreadcrumbsEnabled()) {
+        WTFLogAlways("njc-scroll: input node=%llu delta=(%g,%g) phase=%u momentum=%u gesture=%d willStartSwipe=%d",
+            static_cast<unsigned long long>(targetNodeID.object().toUInt64()),
+            wheelEvent.deltaX(),
+            wheelEvent.deltaY(),
+            static_cast<unsigned>(wheelEvent.phase()),
+            static_cast<unsigned>(wheelEvent.momentumPhase()),
+            gestureState ? static_cast<int>(*gestureState) : -1,
+            m_currentWheelEventWillStartSwipe.value_or(false));
+    }
 
     if (m_currentWheelEventWillStartSwipe && *m_currentWheelEventWillStartSwipe)
         return WheelEventHandlingResult::unhandled();
