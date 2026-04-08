@@ -29,6 +29,7 @@
 
 #include "RemoteLayerTreeEventDispatcher.h"
 #include "RemoteScrollingCoordinatorProxy.h"
+#include <wtf/HashMap.h>
 #include <wtf/TZoneMalloc.h>
 
 namespace WebKit {
@@ -85,6 +86,8 @@ private:
 #endif
 
     const Ref<RemoteLayerTreeEventDispatcher> m_eventDispatcher;
+    HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_scrolledContentsLayerIDs;
+    HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_scrollContainerLayerIDs;
 };
 
 } // namespace WebKit
