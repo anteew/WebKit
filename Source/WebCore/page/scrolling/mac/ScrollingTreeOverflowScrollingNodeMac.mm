@@ -38,6 +38,16 @@
 
 namespace WebCore {
 
+static bool nutjobOverflowScrollBreadcrumbsEnabled()
+{
+    static bool enabled = [] {
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_SCROLL_BREADCRUMBS"))
+            return value[0] && value[0] != '0';
+        return false;
+    }();
+    return enabled;
+}
+
 Ref<ScrollingTreeOverflowScrollingNodeMac> ScrollingTreeOverflowScrollingNodeMac::create(ScrollingTree& scrollingTree, ScrollingNodeID nodeID)
 {
     return adoptRef(*new ScrollingTreeOverflowScrollingNodeMac(scrollingTree, nodeID));
@@ -99,7 +109,28 @@ void ScrollingTreeOverflowScrollingNodeMac::currentScrollPositionChanged(ScrollT
 void ScrollingTreeOverflowScrollingNodeMac::repositionScrollingLayers()
 {
     BEGIN_BLOCK_OBJC_EXCEPTIONS
-    [static_cast<CALayer*>(scrollContainerLayer()) _web_setLayerBoundsOrigin:currentScrollOffset()];
+    auto* layer = static_cast<CALayer*>(scrollContainerLayer());
+    CGPoint previousOrigin = layer ? layer.bounds.origin : CGPointZero;
+    auto targetOrigin = currentScrollOffset();
+    [layer _web_setLayerBoundsOrigin:targetOrigin];
+    if (nutjobOverflowScrollBreadcrumbsEnabled()) {
+        auto appliedOrigin = layer ? layer.bounds.origin : CGPointZero;
+        WTFLogAlways("njc-scroll: live-overflow node=%llu layer=%p previousOrigin=(%g,%g) targetOrigin=(%g,%g) appliedOrigin=(%g,%g) scrollPos=(%g,%g) scrollOffset=(%g,%g) scrollOrigin=(%d,%d)",
+            static_cast<unsigned long long>(scrollingNodeID().object().toUInt64()),
+            layer,
+            previousOrigin.x,
+            previousOrigin.y,
+            targetOrigin.x(),
+            targetOrigin.y(),
+            appliedOrigin.x,
+            appliedOrigin.y,
+            currentScrollPosition().x(),
+            currentScrollPosition().y(),
+            currentScrollOffset().x(),
+            currentScrollOffset().y(),
+            scrollOrigin().x(),
+            scrollOrigin().y());
+    }
     END_BLOCK_OBJC_EXCEPTIONS
 }
 

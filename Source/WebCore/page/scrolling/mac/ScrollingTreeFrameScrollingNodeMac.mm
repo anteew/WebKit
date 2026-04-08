@@ -48,6 +48,16 @@
 
 namespace WebCore {
 
+static bool nutjobFrameScrollBreadcrumbsEnabled()
+{
+    static bool enabled = [] {
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_SCROLL_BREADCRUMBS"))
+            return value[0] && value[0] != '0';
+        return false;
+    }();
+    return enabled;
+}
+
 WTF_MAKE_TZONE_ALLOCATED_IMPL(ScrollingTreeFrameScrollingNodeMac);
 
 Ref<ScrollingTreeFrameScrollingNode> ScrollingTreeFrameScrollingNodeMac::create(ScrollingTree& scrollingTree, ScrollingNodeType nodeType, ScrollingNodeID nodeID)
@@ -181,6 +191,7 @@ void ScrollingTreeFrameScrollingNodeMac::repositionScrollingLayers()
     BEGIN_BLOCK_OBJC_EXCEPTIONS
 
     auto* layer = static_cast<CALayer*>(scrolledContentsLayer());
+    CGPoint previousPosition = layer ? layer.position : CGPointZero;
     if (ScrollingThread::isCurrentThread()) {
         // If we're committing on the scrolling thread, it means that ThreadedScrollingTree is in "desynchronized" mode.
         // The main thread may already have set the same layer position, but here we need to trigger a scrolling thread commit to
@@ -191,7 +202,23 @@ void ScrollingTreeFrameScrollingNodeMac::repositionScrollingLayers()
     }
 
     // We use scroll position here because the root content layer is offset to account for scrollOrigin (see LocalFrameView::positionForRootContentLayer).
-    layer.position = -currentScrollPosition();
+    auto targetPosition = -currentScrollPosition();
+    layer.position = targetPosition;
+    if (nutjobFrameScrollBreadcrumbsEnabled()) {
+        WTFLogAlways("njc-scroll: live-frame node=%llu layer=%p previousPos=(%g,%g) targetPos=(%g,%g) appliedPos=(%g,%g) scrollPos=(%g,%g) scrollOrigin=(%d,%d)",
+            static_cast<unsigned long long>(scrollingNodeID().object().toUInt64()),
+            layer,
+            previousPosition.x,
+            previousPosition.y,
+            targetPosition.x(),
+            targetPosition.y(),
+            layer ? layer.position.x : 0.0,
+            layer ? layer.position.y : 0.0,
+            currentScrollPosition().x(),
+            currentScrollPosition().y(),
+            scrollOrigin().x(),
+            scrollOrigin().y());
+    }
     END_BLOCK_OBJC_EXCEPTIONS
 }
 
