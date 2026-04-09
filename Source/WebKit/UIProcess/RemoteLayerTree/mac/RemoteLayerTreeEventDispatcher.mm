@@ -31,8 +31,10 @@
 #import "DisplayLink.h"
 #import "Logging.h"
 #import "NativeWebWheelEvent.h"
+#import "RemoteAnimationUtilities.h"
 #import "RemoteLayerTreeDrawingAreaProxyMac.h"
 #import "RemoteLayerTreeNode.h"
+#import "RemoteProgressBasedTimeline.h"
 #import "RemoteScrollingCoordinatorProxyMac.h"
 #import "RemoteScrollingTree.h"
 #import "WebEventConversion.h"
@@ -45,6 +47,7 @@
 #import <WebCore/WheelEventDeltaFilter.h>
 #import <wtf/SystemTracing.h>
 #import <wtf/TZoneMallocInlines.h>
+#import <wtf/text/StringBuilder.h>
 
 #if ENABLE(THREADED_ANIMATIONS)
 #import "RemoteMonotonicTimeline.h"
@@ -52,6 +55,74 @@
 
 namespace WebKit {
 using namespace WebCore;
+
+static bool nutjobAnimationBreadcrumbsEnabled()
+{
+    static bool enabled = [] {
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_ANIMATION_BREADCRUMBS"))
+            return value[0] && value[0] != '0';
+        if (const char* value = getenv("NUTJOB_COMPOSITOR_SCROLL_BREADCRUMBS"))
+            return value[0] && value[0] != '0';
+        return false;
+    }();
+    return enabled;
+}
+
+struct NutjobAnimationStackSummary {
+    size_t animationCount { 0 };
+    size_t monotonicCount { 0 };
+    size_t progressCount { 0 };
+    String properties { "none"_s };
+    String scrollingSources { "none"_s };
+};
+
+static String nutjobJoinStrings(const Vector<String>& values)
+{
+    if (values.isEmpty())
+        return "none"_s;
+
+    StringBuilder builder;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i)
+            builder.append(',');
+        builder.append(values[i]);
+    }
+    return builder.toString();
+}
+
+static NutjobAnimationStackSummary nutjobSummarizeAnimationStack(const RemoteAnimationStack& animationStack)
+{
+    NutjobAnimationStackSummary summary;
+    OptionSet<WebCore::AcceleratedEffectProperty> animatedProperties;
+    HashSet<WebCore::ScrollingNodeID> seenSources;
+    Vector<String> sourceIDs;
+
+    for (auto& animation : animationStack) {
+        ++summary.animationCount;
+        animatedProperties.add(animation->animatedProperties());
+
+        if (animation->timeline().isMonotonic())
+            ++summary.monotonicCount;
+        else
+            ++summary.progressCount;
+
+        if (RefPtr progressTimeline = dynamicDowncast<RemoteProgressBasedTimeline>(animation->timeline())) {
+            auto source = progressTimeline->source();
+            if (seenSources.add(source).isNewEntry)
+                sourceIDs.append(String::number(source.object().toUInt64()));
+        }
+    }
+
+    if (!animatedProperties.isEmpty()) {
+        Vector<String> propertyNames;
+        for (auto property : animatedProperties)
+            propertyNames.append(toStringForTesting(property));
+        summary.properties = nutjobJoinStrings(propertyNames);
+    }
+
+    summary.scrollingSources = nutjobJoinStrings(sourceIDs);
+    return summary;
+}
 
 class RemoteLayerTreeEventDispatcherDisplayLinkClient final : public DisplayLink::Client {
 public:
@@ -644,6 +715,22 @@ void RemoteLayerTreeEventDispatcher::animationsWereAddedToNode(RemoteLayerTreeNo
     assertIsHeld(m_animationLock);
     auto animationStack = node.takeAnimationStack();
     ASSERT(animationStack);
+    if (nutjobAnimationBreadcrumbsEnabled()) {
+        auto summary = nutjobSummarizeAnimationStack(*animationStack);
+        auto layerBounds = protect(node.layer()).get().bounds;
+        WTFLogAlways("njc-anim: add layer=%llu count=%zu monotonic=%zu progress=%zu highImpact=%d properties=%s scrollingSources=%s bounds=(%g,%g %gx%g)",
+            static_cast<unsigned long long>(node.layerID().object().toUInt64()),
+            summary.animationCount,
+            summary.monotonicCount,
+            summary.progressCount,
+            node.hasHighImpactMonotonicAnimations(),
+            summary.properties.utf8().data(),
+            summary.scrollingSources.utf8().data(),
+            layerBounds.origin.x,
+            layerBounds.origin.y,
+            layerBounds.size.width,
+            layerBounds.size.height);
+    }
     m_animationStacks.set(node.layerID(), animationStack.releaseNonNull());
 }
 
@@ -651,8 +738,19 @@ void RemoteLayerTreeEventDispatcher::animationsWereRemovedFromNode(RemoteLayerTr
 {
     ASSERT(isMainRunLoop());
     assertIsHeld(m_animationLock);
-    if (auto animationStack = m_animationStacks.take(node.layerID()))
+    if (auto animationStack = m_animationStacks.take(node.layerID())) {
+        if (nutjobAnimationBreadcrumbsEnabled()) {
+            auto summary = nutjobSummarizeAnimationStack(*animationStack);
+            WTFLogAlways("njc-anim: remove layer=%llu count=%zu monotonic=%zu progress=%zu properties=%s scrollingSources=%s",
+                static_cast<unsigned long long>(node.layerID().object().toUInt64()),
+                summary.animationCount,
+                summary.monotonicCount,
+                summary.progressCount,
+                summary.properties.utf8().data(),
+                summary.scrollingSources.utf8().data());
+        }
         animationStack->clear(protect(node.layer()).get());
+    }
 }
 
 void RemoteLayerTreeEventDispatcher::updateTimelinesRegistration(WebCore::ProcessIdentifier processIdentifier, const WebCore::AcceleratedTimelinesUpdate& timelinesUpdate, MonotonicTime now)
@@ -691,6 +789,8 @@ void RemoteLayerTreeEventDispatcher::updateAnimations()
         m_monotonicTimelineRegistry->advanceCurrentTime(MonotonicTime::now());
 
     auto animationStacks = std::exchange(m_animationStacks, { });
+    if (nutjobAnimationBreadcrumbsEnabled() && !animationStacks.isEmpty())
+        WTFLogAlways("njc-anim: tick activeLayers=%u monotonicRegistry=%d", animationStacks.size(), !!m_monotonicTimelineRegistry);
     for (auto [layerID, currentAnimationStack] : animationStacks) {
         Ref animationStack = currentAnimationStack;
         animationStack->applyEffects();
