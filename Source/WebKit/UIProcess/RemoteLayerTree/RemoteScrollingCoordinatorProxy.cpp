@@ -31,6 +31,7 @@
 #include "MessageSenderInlines.h"
 #include "NativeWebWheelEvent.h"
 #include "RemoteLayerTreeDrawingAreaProxy.h"
+#include "../../Shared/RemoteLayerTree/RemoteLayerTreeNutjobScrollingBreadcrumbs.h"
 #include "RemoteLayerTreeScrollingPerformanceData.h"
 #include "RemoteScrollingCoordinator.h"
 #include "RemoteScrollingCoordinatorMessages.h"
@@ -87,6 +88,9 @@ const RemoteLayerTreeHost* RemoteScrollingCoordinatorProxy::layerTreeHost() cons
 ScrollRequestData RemoteScrollingCoordinatorProxy::commitScrollingTreeState(IPC::Connection& connection, const RemoteScrollingCoordinatorTransaction& transaction, std::optional<LayerHostingContextIdentifier> identifier)
 {
     m_scrollRequestData.clear();
+    std::optional<NutjobScrollingTransactionSummary> scrollingSummary;
+    if (nutjobScrollBreadcrumbsEnabled())
+        scrollingSummary = nutjobSummarizeScrollingTransaction(transaction);
 
     auto stateTree = WTF::move(const_cast<RemoteScrollingCoordinatorTransaction&>(transaction).scrollingStateTree());
 
@@ -101,6 +105,40 @@ ScrollRequestData RemoteScrollingCoordinatorProxy::commitScrollingTreeState(IPC:
     ASSERT(stateTree);
     connectStateNodeLayers(*stateTree, *layerTreeHost);
     bool succeeded = m_scrollingTree->commitTreeState(WTF::move(stateTree), identifier);
+    if (scrollingSummary) {
+        auto appliedScrollPosition = currentMainFrameScrollPosition();
+        auto appliedScrollOrigin = scrollOrigin();
+        WTFLogAlways("njc-scroll: apply ok=%d frame=%llu clearLatching=%d treeChanged=%d newRoot=%d nodes=%u scrollingNodes=%u rootNode=%llu rootChanged=0x%llx scrollPos=(%g,%g) origin=(%d,%d) layoutViewport=(%g,%g %gx%g) visible=(%gx%g) layers(root=%llu container=%llu scrolled=%llu) requested=%u returned=%zu appliedRoot=%llu appliedScroll=(%g,%g) appliedOrigin=(%d,%d)",
+            succeeded,
+            scrollingSummary->frameID,
+            scrollingSummary->clearScrollLatching,
+            scrollingSummary->hasChangedProperties,
+            scrollingSummary->hasNewRootStateNode,
+            scrollingSummary->nodeCount,
+            scrollingSummary->scrollingNodeCount,
+            scrollingSummary->rootNodeID,
+            scrollingSummary->rootChangedProperties,
+            scrollingSummary->scrollPositionX,
+            scrollingSummary->scrollPositionY,
+            scrollingSummary->scrollOriginX,
+            scrollingSummary->scrollOriginY,
+            scrollingSummary->layoutViewportX,
+            scrollingSummary->layoutViewportY,
+            scrollingSummary->layoutViewportWidth,
+            scrollingSummary->layoutViewportHeight,
+            scrollingSummary->visibleContentWidth,
+            scrollingSummary->visibleContentHeight,
+            scrollingSummary->rootContentsLayerID,
+            scrollingSummary->scrollContainerLayerID,
+            scrollingSummary->scrolledContentsLayerID,
+            scrollingSummary->requestedScrollCount,
+            m_scrollRequestData.size(),
+            nutjobScrollingNodeIDValue(rootScrollingNodeID()),
+            appliedScrollPosition.x(),
+            appliedScrollPosition.y(),
+            appliedScrollOrigin.x(),
+            appliedScrollOrigin.y());
+    }
 
     MESSAGE_CHECK_WITH_RETURN_VALUE(succeeded, ScrollRequestData());
 

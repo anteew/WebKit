@@ -31,6 +31,7 @@
 #import "LayerProperties.h"
 #import "Logging.h"
 #import "MessageSenderInlines.h"
+#include "../../Shared/RemoteLayerTree/RemoteLayerTreeNutjobScrollingBreadcrumbs.h"
 #import "nutjob_compositor.h"
 #import "ProcessThrottler.h"
 #import "RemoteLayerTreeCommitBundle.h"
@@ -538,6 +539,9 @@ void RemoteLayerTreeDrawingAreaProxy::commitLayerTreeTransaction(IPC::Connection
     {
         ScrollRequestData requestedScroll;
         CheckedRef scrollingCoordinatorProxy = *page->scrollingCoordinatorProxy();
+        std::optional<NutjobScrollingTransactionSummary> scrollingSummary;
+        if (nutjobScrollBreadcrumbsEnabled())
+            scrollingSummary = nutjobSummarizeScrollingTransaction(scrollingTreeTransaction);
 
         auto commitLayerAndScrollingTrees = [&] {
             if (layerTreeTransaction.hasAnyLayerChanges())
@@ -553,6 +557,37 @@ void RemoteLayerTreeDrawingAreaProxy::commitLayerTreeTransaction(IPC::Connection
                     m_remoteLayerTreeHost->detachRootLayer();
             }
             requestedScroll = scrollingCoordinatorProxy->commitScrollingTreeState(connection, scrollingTreeTransaction, layerTreeTransaction.remoteContextHostedIdentifier());
+            if (scrollingSummary) {
+                WTFLogAlways("njc-scroll: bundle txn=%llu layers(created=%zu changed=%u destroyed=%zu) hosted=%d frame=%llu clearLatching=%d treeChanged=%d newRoot=%d nodes=%u scrollingNodes=%u rootNode=%llu rootChanged=0x%llx scrollPos=(%g,%g) origin=(%d,%d) layoutViewport=(%g,%g %gx%g) visible=(%gx%g) layers(root=%llu container=%llu scrolled=%llu) requested=%u returned=%zu",
+                    static_cast<unsigned long long>(transactionID.object().toUInt64()),
+                    layerTreeTransaction.createdLayers().size(),
+                    layerTreeTransaction.changedLayerProperties().size(),
+                    layerTreeTransaction.destroyedLayers().size(),
+                    !!layerTreeTransaction.remoteContextHostedIdentifier(),
+                    scrollingSummary->frameID,
+                    scrollingSummary->clearScrollLatching,
+                    scrollingSummary->hasChangedProperties,
+                    scrollingSummary->hasNewRootStateNode,
+                    scrollingSummary->nodeCount,
+                    scrollingSummary->scrollingNodeCount,
+                    scrollingSummary->rootNodeID,
+                    scrollingSummary->rootChangedProperties,
+                    scrollingSummary->scrollPositionX,
+                    scrollingSummary->scrollPositionY,
+                    scrollingSummary->scrollOriginX,
+                    scrollingSummary->scrollOriginY,
+                    scrollingSummary->layoutViewportX,
+                    scrollingSummary->layoutViewportY,
+                    scrollingSummary->layoutViewportWidth,
+                    scrollingSummary->layoutViewportHeight,
+                    scrollingSummary->visibleContentWidth,
+                    scrollingSummary->visibleContentHeight,
+                    scrollingSummary->rootContentsLayerID,
+                    scrollingSummary->scrollContainerLayerID,
+                    scrollingSummary->scrolledContentsLayerID,
+                    scrollingSummary->requestedScrollCount,
+                    requestedScroll.size());
+            }
         };
 
         scrollingCoordinatorProxy->willCommitLayerAndScrollingTrees();

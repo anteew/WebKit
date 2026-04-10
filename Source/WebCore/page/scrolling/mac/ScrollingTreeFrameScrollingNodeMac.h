@@ -48,6 +48,8 @@ public:
     virtual ~ScrollingTreeFrameScrollingNodeMac();
 
     RetainPtr<CALayer> rootContentsLayer() const { return m_rootContentsLayer; }
+    RetainPtr<CALayer> insetClipLayer() const { return m_insetClipLayer; }
+    RetainPtr<CALayer> contentShadowLayer() const { return m_contentShadowLayer; }
 
     void startRubberBandSnapBack();
     void rubberBandTargetOffsetDidChange();
