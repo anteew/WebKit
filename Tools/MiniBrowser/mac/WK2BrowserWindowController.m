@@ -264,7 +264,12 @@ static void writeHarnessJSON(NSString *path, NSDictionary *object)
                 if (!self || !self->_webView)
                     return;
 
-                if ([type isEqualToString:@"keydown"]) {
+                if ([type isEqualToString:@"open_url"]) {
+                    NSString *urlString = event[@"url"];
+                    if ([urlString isKindOfClass:NSString.class] && urlString.length)
+                        [self loadURLString:urlString];
+
+                } else if ([type isEqualToString:@"keydown"]) {
                     NSString *key = event[@"key"];
                     NSString *js = nil;
                     if ([key isEqualToString:@"ArrowDown"])
