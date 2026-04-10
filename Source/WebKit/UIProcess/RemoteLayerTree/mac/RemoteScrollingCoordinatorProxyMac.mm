@@ -42,6 +42,7 @@
 #import <WebCore/ScrollingStateStickyNode.h>
 #import <WebCore/ScrollingStateTree.h>
 #import <WebCore/ScrollingTreeFrameScrollingNode.h>
+#import <WebCore/ScrollingTreeFrameScrollingNodeMac.h>
 #import <WebCore/ScrollingTreeOverflowScrollProxyNode.h>
 #import <WebCore/ScrollingTreeOverflowScrollingNode.h>
 #import <WebCore/ScrollingTreePluginScrollingNode.h>
@@ -81,6 +82,36 @@ static void mirrorNutjobLayerPosition(ScrollingNodeID nodeID, PlatformLayerIdent
         position.x,
         position.y,
         layer.zPosition,
+        scrollPosition.x(),
+        scrollPosition.y(),
+        scrollOrigin.x(),
+        scrollOrigin.y());
+}
+
+static void mirrorNutjobLayerGeometry(ScrollingNodeID nodeID, PlatformLayerIdentifier layerID, CALayer* layer, const char* label, FloatPoint scrollPosition, IntPoint scrollOrigin)
+{
+    if (!layer)
+        return;
+
+    auto position = layer.position;
+    auto bounds = layer.bounds;
+    nutjob_layer_set_position(njc_thread(), njc_layer_id(layerID.object().toUInt64()), position.x, position.y, layer.zPosition);
+    nutjob_layer_set_bounds(njc_thread(), njc_layer_id(layerID.object().toUInt64()), bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height);
+
+    if (!nutjobScrollBreadcrumbsEnabled())
+        return;
+
+    WTFLogAlways("njc-scroll: %s node=%llu layer=%llu pos=(%g,%g,%g) boundsOrigin=(%g,%g) size=(%g,%g) scrollPos=(%g,%g) scrollOrigin=(%d,%d)",
+        label,
+        static_cast<unsigned long long>(nodeID.object().toUInt64()),
+        static_cast<unsigned long long>(layerID.object().toUInt64()),
+        position.x,
+        position.y,
+        layer.zPosition,
+        bounds.origin.x,
+        bounds.origin.y,
+        bounds.size.width,
+        bounds.size.height,
         scrollPosition.x(),
         scrollPosition.y(),
         scrollOrigin.x(),
@@ -227,11 +258,15 @@ void RemoteScrollingCoordinatorProxyMac::connectStateNodeLayers(ScrollingStateTr
             if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::CounterScrollingLayer))
                 scrollingStateNode->setCounterScrollingLayer(layerTreeHost.layerForID(scrollingStateNode->counterScrollingLayer().layerID()));
 
-            if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::InsetClipLayer))
+            if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::InsetClipLayer)) {
+                updateTrackedScrollingLayerID(m_insetClipLayerIDs, scrollingStateNode->scrollingNodeID(), scrollingStateNode->insetClipLayer());
                 scrollingStateNode->setInsetClipLayer(layerTreeHost.layerForID(scrollingStateNode->insetClipLayer().layerID()));
+            }
 
-            if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::ContentShadowLayer))
+            if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::ContentShadowLayer)) {
+                updateTrackedScrollingLayerID(m_contentShadowLayerIDs, scrollingStateNode->scrollingNodeID(), scrollingStateNode->contentShadowLayer());
                 scrollingStateNode->setContentShadowLayer(layerTreeHost.layerForID(scrollingStateNode->contentShadowLayer().layerID()));
+            }
 
             // FIXME: we should never have header and footer layers coming from the WebProcess.
             if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::HeaderLayer))
@@ -246,8 +281,10 @@ void RemoteScrollingCoordinatorProxyMac::connectStateNodeLayers(ScrollingStateTr
             if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::HorizontalScrollbarLayer))
                 scrollingStateNode->setHorizontalScrollbarLayer(layerTreeHost.layerForID(scrollingStateNode->horizontalScrollbarLayer().layerID()));
 
-            if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::RootContentsLayer))
+            if (scrollingStateNode->hasChangedProperty(ScrollingStateNode::Property::RootContentsLayer)) {
+                updateTrackedScrollingLayerID(m_rootContentsLayerIDs, scrollingStateNode->scrollingNodeID(), scrollingStateNode->rootContentsLayer());
                 scrollingStateNode->setRootContentsLayer(layerTreeHost.layerForID(scrollingStateNode->rootContentsLayer().layerID()));
+            }
             break;
         }
         case ScrollingNodeType::Overflow: {
@@ -346,9 +383,11 @@ void RemoteScrollingCoordinatorProxyMac::applyScrollingTreeLayerPositionsAfterCo
 
     if (njc_is_active()) {
         for (const auto& [scrollingNodeID, layerID] : m_scrolledContentsLayerIDs) {
-            auto* scrollingNode = dynamicDowncast<ScrollingTreeScrollingNode>(scrollingTree().nodeForID(scrollingNodeID));
-            if (!scrollingNode)
+            auto* frameScrollingNode = dynamicDowncast<ScrollingTreeFrameScrollingNode>(scrollingTree().nodeForID(scrollingNodeID));
+            if (!frameScrollingNode || !frameScrollingNode->isScrollingTreeFrameScrollingNodeMac())
                 continue;
+
+            auto* scrollingNode = static_cast<ScrollingTreeFrameScrollingNodeMac*>(frameScrollingNode);
 
             if (scrollingNode->nodeType() != ScrollingNodeType::MainFrame && scrollingNode->nodeType() != ScrollingNodeType::Subframe)
                 continue;
@@ -358,6 +397,24 @@ void RemoteScrollingCoordinatorProxyMac::applyScrollingTreeLayerPositionsAfterCo
                 continue;
 
             mirrorNutjobLayerPosition(scrollingNodeID, layerID, layer, scrollingNode->currentScrollPosition(), scrollingNode->scrollOrigin());
+
+            if (auto iterator = m_insetClipLayerIDs.find(scrollingNodeID); iterator != m_insetClipLayerIDs.end()) {
+                RetainPtr insetClipLayer = scrollingNode->insetClipLayer();
+                if (insetClipLayer)
+                    mirrorNutjobLayerGeometry(scrollingNodeID, iterator->value, insetClipLayer.get(), "mirror-inset", scrollingNode->currentScrollPosition(), scrollingNode->scrollOrigin());
+            }
+
+            if (auto iterator = m_rootContentsLayerIDs.find(scrollingNodeID); iterator != m_rootContentsLayerIDs.end()) {
+                RetainPtr rootContentsLayer = scrollingNode->rootContentsLayer();
+                if (rootContentsLayer)
+                    mirrorNutjobLayerGeometry(scrollingNodeID, iterator->value, rootContentsLayer.get(), "mirror-root", scrollingNode->currentScrollPosition(), scrollingNode->scrollOrigin());
+            }
+
+            if (auto iterator = m_contentShadowLayerIDs.find(scrollingNodeID); iterator != m_contentShadowLayerIDs.end()) {
+                RetainPtr contentShadowLayer = scrollingNode->contentShadowLayer();
+                if (contentShadowLayer)
+                    mirrorNutjobLayerGeometry(scrollingNodeID, iterator->value, contentShadowLayer.get(), "mirror-shadow", scrollingNode->currentScrollPosition(), scrollingNode->scrollOrigin());
+            }
         }
 
         for (const auto& [scrollingNodeID, layerID] : m_scrollContainerLayerIDs) {

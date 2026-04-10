@@ -88,6 +88,9 @@ private:
     const Ref<RemoteLayerTreeEventDispatcher> m_eventDispatcher;
     HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_scrolledContentsLayerIDs;
     HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_scrollContainerLayerIDs;
+    HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_rootContentsLayerIDs;
+    HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_insetClipLayerIDs;
+    HashMap<WebCore::ScrollingNodeID, WebCore::PlatformLayerIdentifier> m_contentShadowLayerIDs;
 };
 
 } // namespace WebKit
